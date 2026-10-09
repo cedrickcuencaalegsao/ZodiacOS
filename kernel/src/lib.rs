@@ -5,9 +5,13 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 mod arch;
+mod ata;
 mod base;
+mod fs;
 mod keyboard;
 mod package;
+mod time;
+mod user;
 mod vga;
 
 #[panic_handler]
