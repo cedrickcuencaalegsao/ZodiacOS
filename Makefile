@@ -10,6 +10,9 @@ KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 DISK_IMG   := $(BUILD_DIR)/zodiacos.img
 
+ISO_IMG    := $(BUILD_DIR)/zodiacos.iso
+ISO_ROOT   := $(BUILD_DIR)/iso
+
 # Data disk lives outside build/ so `make clean` never deletes your files
 DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.img
@@ -25,7 +28,7 @@ QEMU_DRIVES := \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
 	-drive format=raw,file=$(DATA_IMG),if=ide,index=1
 
-.PHONY: all clean clean-disk run run-debug watch dirs
+.PHONY: all clean clean-disk run run-debug watch dirs iso
 
 # ---- Default ----------------------------------------------------------------
 all: $(DISK_IMG) $(DATA_IMG)
@@ -77,6 +80,21 @@ $(DATA_IMG):
 	@echo "[DATA] Creating 16 MB data disk..."
 	@mkdir -p $(DATA_DIR)
 	dd if=/dev/zero of=$@ bs=1m count=16 status=none
+
+# ---- ISO --------------------------------------------------------------------
+iso: $(DISK_IMG)
+	@echo "[ISO]  Creating ZodiacOS ISO..."
+	@mkdir -p $(ISO_ROOT)
+	cp $(DISK_IMG) $(ISO_ROOT)/zodiacos.img
+	xorriso -as mkisofs \
+		-V ZODIACOS \
+		-o $(ISO_IMG) \
+		$(ISO_ROOT)
+	@echo "       ISO created: $(ISO_IMG)"
+
+iso-inspect: $(ISO_IMG)
+	@echo "[ISO]  Inspecting ZodiacOS ISO..."
+	xorriso -indev $(ISO_IMG) -report_el_torito as_mkisofs
 
 # ---- QEMU -------------------------------------------------------------------
 run: $(DISK_IMG) $(DATA_IMG)
