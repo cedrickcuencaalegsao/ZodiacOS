@@ -31,7 +31,7 @@ $(BOOT_BIN): bootloader/boot.asm | dirs
 	@echo "       $$(wc -c < $@) bytes — OK"
 
 # ---- Kernel (Rust) ----------------------------------------------------------
-$(KERNEL_LIB): $(wildcard kernel/src/*.rs) kernel/Cargo.toml
+$(KERNEL_LIB): $(shell find kernel/src -name '*.rs') kernel/Cargo.toml
 	@echo "[RUST] Building kernel (release)..."
 	cd kernel && cargo +nightly build --release \
 		-Z build-std=core,compiler_builtins \
@@ -46,6 +46,7 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	@echo "[OBJ]  Extracting flat binary..."
 	$(OBJCOPY) -O binary $< $@
 	@echo "       $$(wc -c < $@) bytes (flat binary)"
+	@test $$(wc -c < $@) -le 327680 || (echo "ERROR: kernel exceeds 640 sectors, raise KERNEL_SECTORS in boot.asm" && exit 1)
 
 # ---- Disk Image -------------------------------------------------------------
 $(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN)

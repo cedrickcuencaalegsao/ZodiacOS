@@ -6,7 +6,8 @@
 
 KERNEL_ADDR     equ 0x10000     ; physical load address (linker script must match)
 KERNEL_SEG      equ 0x1000      ; KERNEL_ADDR >> 4
-KERNEL_SECTORS  equ 64          ; 32 KB; raise if your kernel grows
+CHUNK           equ 32          ; sectors per BIOS read (16 KB)
+KERNEL_SECTORS  equ 640         ; 320 KB total, must be a multiple of CHUNK
 STACK_TOP       equ 0x90000
 
 PML4            equ 0x1000
@@ -24,32 +25,37 @@ start:
 
     mov [boot_drive], dl        ; BIOS passes boot drive in DL
 
-    ; ---- Load kernel with BIOS extended read (LBA) ----
+    ; ---- Load kernel in chunks with BIOS extended read (LBA) ----
+.load:
     mov si, dap
     mov dl, [boot_drive]
     mov ah, 0x42
     int 0x13
     jc  disk_error
+    add word  [dap_seg], CHUNK * 512 / 16   ; advance destination
+    add dword [dap_lba], CHUNK              ; advance source sector
+    dec byte  [chunks_left]
+    jnz .load
 
     cli
 
     ; ---- Enable A20 (fast method) ----
     in   al, 0x92
     or   al, 2
-    and  al, 0xFE               ; never set bit 0 (would reset the CPU)
+    and  al, 0xFE
     out  0x92, al
 
     ; ---- Zero the page table area (0x1000-0x3FFF) ----
     cld
     mov  edi, PML4
     xor  eax, eax
-    mov  ecx, 3072              ; 12 KB / 4
+    mov  ecx, 3072
     rep  stosd
 
     ; ---- Identity-map the first 2 MB using one 2 MB page ----
-    mov  dword [PML4], PDPT | 0x03      ; present | writable
+    mov  dword [PML4], PDPT | 0x03
     mov  dword [PDPT], PD   | 0x03
-    mov  dword [PD],   0x83             ; present | writable | page size (2MB)
+    mov  dword [PD],   0x83
 
     ; ---- Enter long mode ----
     lgdt [gdt_ptr]
@@ -106,13 +112,17 @@ gdt_ptr:
     dw gdt_end - gdt - 1
     dd gdt
 
-dap:                            ; Disk Address Packet
+dap:                            ; Disk Address Packet (updated each chunk)
     db 0x10, 0
-    dw KERNEL_SECTORS
-    dw 0x0000, KERNEL_SEG       ; offset, segment
-    dq 1                        ; start at LBA 1 (sector right after boot sector)
+    dw CHUNK                    ; sectors per read
+    dw 0x0000                   ; destination offset
+dap_seg:
+    dw KERNEL_SEG               ; destination segment
+dap_lba:
+    dq 1                        ; start at LBA 1
 
-boot_drive: db 0
+chunks_left: db KERNEL_SECTORS / CHUNK
+boot_drive:  db 0
 
 times 510 - ($ - $$) db 0
 dw 0xAA55
