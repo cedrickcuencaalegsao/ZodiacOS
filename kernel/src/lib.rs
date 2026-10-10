@@ -13,10 +13,12 @@ mod package;
 mod time;
 mod user;
 mod vga;
+mod serial;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    vga::set_color(0x4F); // white on red
+    slogln!("[PANIC] {}", info);
+    vga::set_color(0x4F);
     kprintln!("\nKERNEL PANIC: {}", info);
     loop {
         unsafe { asm!("hlt") };
@@ -40,15 +42,19 @@ unsafe fn zero_bss() {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     unsafe { zero_bss() };
+    serial::init();
+    log_info!("ZodiacOS kernel started");
 
     vga::disable_cursor();
     vga::clear();
     base::splash::run(3000);
+    log_info!("splash finished");
 
     vga::clear();
     vga::enable_cursor();
     kprintln!("ZodiacOS 0.1.0");
     kprintln!("Type 'help' for a list of commands.\n");
 
+    log_info!("starting shell");
     base::shell::run()
 }
