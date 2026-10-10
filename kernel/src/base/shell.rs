@@ -1,6 +1,6 @@
 use crate::base::zpm;
-use crate::{arch, ata, fs, keyboard, time, user, vga};
-use crate::{kprint, kprintln};
+use crate::{arch, ata, fs, interrupts, keyboard, time, user, vga};
+use crate::{kassert_eq, kprint, kprintln};
 use core::sync::atomic::{AtomicU16, Ordering::Relaxed};
 
 /// Current folder (fs::ROOT = "/").
@@ -14,15 +14,7 @@ pub fn run() -> ! {
     let mut buf = [0u8; 128];
 
     loop {
-        vga::set_color(0x0A);
-        kprint!("zodiac");
-        if cwd() != fs::ROOT {
-            vga::set_color(0x0B);
-            kprint!(":");
-            print_path(cwd(), 0);
-        }
-        vga::set_color(0x0F);
-        kprint!("> ");
+        print_prompt();
 
         let mut len = 0usize;
         loop {
@@ -63,6 +55,29 @@ fn print_path(id: fs::Id, depth: u8) {
     }
 }
 
+fn print_prompt() {
+    let u = user::get();
+
+    vga::set_color(0x0A); // green: username
+    kprint!("{}", user::as_str(&u));
+    vga::set_color(0x0F); // white: @
+    kprint!("@");
+    vga::set_color(0x0B); // light cyan: hostname
+    kprint!("zodiacos");
+    vga::set_color(0x0F);
+    kprint!("/");
+    vga::set_color(0x0E); // yellow: ~ (home = root of hdb)
+    kprint!("~");
+
+    if cwd() != fs::ROOT {
+        vga::set_color(0x09); // light blue: path below ~
+        print_path(cwd(), 0);
+    }
+
+    vga::set_color(0x0F);
+    kprint!("> ");
+}
+
 fn execute(line: &str) {
     let mut parts = [""; 8];
     let mut argc = 0;
@@ -100,7 +115,6 @@ fn execute(line: &str) {
             vga::set_color(0x0E);
             kprintln!("Shutting down ZodiacOS...");
             arch::sleep_ms(800);
-            kprintln!("It is now safe to turn off your computer.");
             arch::shutdown();
         }
         "zpm" => zpm::run(args),
@@ -153,6 +167,38 @@ fn execute(line: &str) {
             },
             None => kprintln!("usage: login <name>"),
         },
+        "uptime" => {
+            let ms = interrupts::uptime_ms();
+            kprintln!(
+                "up {}m {}s ({} ticks)",
+                ms / 60_000,
+                ms / 1000 % 60,
+                interrupts::ticks()
+            );
+        }
+        "sleep" => match args.first().and_then(|a| a.parse::<u64>().ok()) {
+            Some(ms) => interrupts::sleep_ms(ms),
+            None => kprintln!("usage: sleep <milliseconds>"),
+        },
+        "crash" => match args.first().copied() {
+            Some("panic") => panic!("test panic from the shell"),
+            Some("assert") => {
+                let n = args.len();
+                kassert_eq!(n, 99);
+            }
+            Some("ud") => unsafe { core::arch::asm!("ud2") },
+            Some("pf") => unsafe {
+                let _ = core::ptr::read_volatile(0x4000_0000 as *const u8);
+            },
+            Some("div") => unsafe {
+                core::arch::asm!(
+                    "xor edx, edx", "mov eax, 1", "xor ecx, ecx", "div ecx",
+                    out("eax") _, out("ecx") _, out("edx") _
+                )
+            },
+            Some("bp") => unsafe { core::arch::asm!("int3") },
+            _ => kprintln!("usage: crash <panic|assert|ud|pf|div|bp>"),
+        },
 
         other => {
             // Installed packages work as commands
@@ -163,30 +209,87 @@ fn execute(line: &str) {
     }
 }
 
+// ---- Help -------------------------------------------------------------------
+
+// VGA color attributes used by the help screen.
+const HELP_HEADING: u8 = 0x0B; // light cyan
+const HELP_CMD: u8 = 0x0E; // yellow
+const HELP_ARGS: u8 = 0x0A; // light green
+const HELP_DESC: u8 = 0x07; // light gray
+const HELP_DEFAULT: u8 = 0x0F; // white (shell default)
+
+/// Width of the "command + arguments" column.
+const HELP_COL: usize = 20;
+
+/// Prints a section heading.
+fn help_heading(title: &str) {
+    vga::set_color(HELP_HEADING);
+    kprintln!("{}", title);
+}
+
+/// Prints one help line: command in one color, arguments in another,
+/// padded to a fixed column, then the description.
+/// Pass "" for `args` when the command takes none.
+fn help_line(cmd: &str, args: &str, desc: &str) {
+    vga::set_color(HELP_CMD);
+    kprint!("  {}", cmd);
+
+    let mut used = cmd.len();
+    if !args.is_empty() {
+        vga::set_color(HELP_ARGS);
+        kprint!(" {}", args);
+        used += 1 + args.len();
+    }
+
+    // Pad so the descriptions line up (+1 keeps a gap on long entries).
+    let pad = if used < HELP_COL { HELP_COL - used } else { 1 };
+    for _ in 0..pad {
+        kprint!(" ");
+    }
+
+    vga::set_color(HELP_DESC);
+    kprintln!("{}", desc);
+}
+
 fn help() {
-    kprintln!("System:");
-    kprintln!("  whoami              show current user");
-    kprintln!("  login <name>        switch user (sets the author of new files)");
-    kprintln!("  help                show this list");
-    kprintln!("  clear               clear the screen");
-    kprintln!("  echo <text>         print text");
-    kprintln!("  about               show OS version");
-    kprintln!("  reboot              restart the machine (alias: restart)");
-    kprintln!("  shutdown            power off (alias: poweroff)");
-    kprintln!("  zpm <command>       package manager (run 'zpm' for usage)");
-    kprintln!("Drives and files:");
-    kprintln!("  drives              list attached disks");
-    kprintln!("  format              format hdb (erases everything)");
-    kprintln!("  ls                  list files and folders here");
-    kprintln!("  pwd                 show current folder");
-    kprintln!("  cd <folder>         enter a folder (cd .. up, cd / root)");
-    kprintln!("  newfl <name...>     create empty file(s)");
-    kprintln!("  newfldr <name...>   create folder(s)");
-    kprintln!("  write <file> <text> write text to a file");
-    kprintln!("  cat <file>          show a file");
-    kprintln!("  rm <name>           delete a file or empty folder");
-    kprintln!("  df                  disk usage");
+    help_heading("System:");
+    help_line("whoami", "", "show current user");
+    help_line(
+        "login",
+        "<name>",
+        "switch user (sets the author of new files)",
+    );
+    help_line("help", "", "show this list");
+    help_line("clear", "", "clear the screen");
+    help_line("echo", "<text>", "print text");
+    help_line("about", "", "show OS version");
+    help_line("reboot", "", "restart the machine (alias: restart)");
+    help_line("shutdown", "", "power off (alias: poweroff)");
+    help_line("zpm", "<command>", "package manager (run 'zpm' for usage)");
+    help_line("uptime", "", "time since boot");
+    help_line("sleep", "<ms>", "wait using the timer interrupt");
+    help_line(
+        "crash",
+        "<panic|assert|ud|pf|div|bp>",
+        "trigger a test crash",
+    );
+
+    help_heading("Drives and files:");
+    help_line("drives", "", "list attached disks");
+    help_line("format", "", "format hdb (erases everything)");
+    help_line("ls", "", "list files and folders here");
+    help_line("pwd", "", "show current folder");
+    help_line("cd", "<folder>", "enter a folder (cd .. up, cd / root)");
+    help_line("newfl", "<name...>", "create empty file(s)");
+    help_line("newfldr", "<name...>", "create folder(s)");
+    help_line("write", "<file> <text>", "write text to a file");
+    help_line("cat", "<file>", "show a file");
+    help_line("rm", "<name>", "delete a file or empty folder");
+    help_line("df", "", "disk usage");
+
+    vga::set_color(HELP_DESC);
     kprintln!("Installed packages can be run by name.");
+    vga::set_color(HELP_DEFAULT); // restore the shell's default color
 }
 
 // ---- File commands ----------------------------------------------------------

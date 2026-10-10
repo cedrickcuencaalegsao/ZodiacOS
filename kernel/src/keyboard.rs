@@ -1,5 +1,6 @@
 use crate::arch::inb;
-use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use core::arch::asm;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
 
 static SHIFT: AtomicBool = AtomicBool::new(false);
 
@@ -18,13 +19,8 @@ const SHIFTED: [u8; 58] = [
     b'Z', b'X', b'C', b'V', b'B', b'N', b'M', b'<', b'>', b'?', 0, b'*', 0, b' ',
 ];
 
-/// Non-blocking: returns a character if a key press is waiting.
-pub fn read_char() -> Option<u8> {
-    if unsafe { inb(0x64) } & 1 == 0 {
-        return None;
-    }
-    let sc = unsafe { inb(0x60) };
-
+/// Scancode -> character, tracking the shift state.
+fn decode(sc: u8) -> Option<u8> {
     match sc {
         0x2A | 0x36 => {
             SHIFT.store(true, Relaxed);
@@ -43,11 +39,66 @@ pub fn read_char() -> Option<u8> {
     }
 }
 
+// ---- Ring buffer: the IRQ handler produces, the shell consumes ---------------
+const CAP: usize = 64;
+static BUF: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
+static HEAD: AtomicUsize = AtomicUsize::new(0);
+static TAIL: AtomicUsize = AtomicUsize::new(0);
+
+fn push(c: u8) {
+    let head = HEAD.load(Relaxed);
+    let next = (head + 1) % CAP;
+    if next == TAIL.load(Acquire) {
+        return; // buffer full, drop the key
+    }
+    BUF[head].store(c, Relaxed);
+    HEAD.store(next, Release);
+}
+
+/// Called from the IRQ1 handler.
+pub fn handle_irq() {
+    let sc = unsafe { inb(0x60) };
+    if let Some(c) = decode(sc) {
+        push(c);
+    }
+}
+
+/// Non-blocking: next typed character, if any.
+pub fn read_char() -> Option<u8> {
+    let tail = TAIL.load(Relaxed);
+    if tail == HEAD.load(Acquire) {
+        return None;
+    }
+    let c = BUF[tail].load(Relaxed);
+    TAIL.store((tail + 1) % CAP, Release);
+    Some(c)
+}
+
+/// Blocks until a key is typed. `hlt` idles the CPU until the next interrupt
+/// (the timer ticks every 10 ms, so a key is picked up at the latest then).
 pub fn wait_char() -> u8 {
     loop {
         if let Some(c) = read_char() {
             return c;
         }
-        core::hint::spin_loop();
+        unsafe { asm!("hlt", options(nomem, nostack)) };
+    }
+}
+
+/// Reads the hardware directly, for when interrupts are off (the panic screen).
+pub fn poll_char() -> Option<u8> {
+    if unsafe { inb(0x64) } & 1 == 0 {
+        return None;
+    }
+    decode(unsafe { inb(0x60) })
+}
+
+/// Drops anything the controller buffered before interrupts were enabled.
+pub fn flush() {
+    for _ in 0..32 {
+        if unsafe { inb(0x64) } & 1 == 0 {
+            break;
+        }
+        let _ = unsafe { inb(0x60) };
     }
 }

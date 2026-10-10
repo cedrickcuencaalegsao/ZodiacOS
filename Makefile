@@ -22,13 +22,17 @@ MAX_KERNEL_BYTES := 327680
 
 KERNEL_SRC := $(shell find kernel/src -name '*.rs')
 
+# COM1 output (slog!/log_info! in the kernel) goes to this terminal.
+# To keep the terminal quiet and read logs later, use instead:
+#   -serial file:$(BUILD_DIR)/serial.log
 QEMU       := qemu-system-x86_64
 QEMU_DRIVES := \
 	-rtc base=localtime \
+	-serial stdio \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
 	-drive format=raw,file=$(DATA_IMG),if=ide,index=1
 
-.PHONY: all clean clean-disk run run-debug watch dirs iso
+.PHONY: all clean clean-disk run run-debug watch dirs iso iso-inspect
 
 # ---- Default ----------------------------------------------------------------
 all: $(DISK_IMG) $(DATA_IMG)
@@ -82,6 +86,7 @@ $(DATA_IMG):
 	dd if=/dev/zero of=$@ bs=1m count=16 status=none
 
 # ---- ISO --------------------------------------------------------------------
+# NOTE: this ISO is not bootable yet (no El Torito boot record), see the notes.
 iso: $(DISK_IMG)
 	@echo "[ISO]  Creating ZodiacOS ISO..."
 	@mkdir -p $(ISO_ROOT)
@@ -92,7 +97,7 @@ iso: $(DISK_IMG)
 		$(ISO_ROOT)
 	@echo "       ISO created: $(ISO_IMG)"
 
-iso-inspect: $(ISO_IMG)
+iso-inspect: iso
 	@echo "[ISO]  Inspecting ZodiacOS ISO..."
 	xorriso -indev $(ISO_IMG) -report_el_torito as_mkisofs
 
