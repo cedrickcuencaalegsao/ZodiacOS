@@ -167,6 +167,14 @@ fn execute(line: &str) {
             },
             None => kprintln!("usage: login <name>"),
         },
+        "crash" => match args.first().copied() {
+            Some("panic") => panic!("test panic from the shell"),
+            Some("ud") => unsafe { core::arch::asm!("ud2") },
+            Some("pf") => unsafe {
+                let _ = core::ptr::read_volatile(0x4000_0000 as *const u8);
+            },
+            _ => kprintln!("usage: crash <panic|ud|pf>"),
+        },
 
         other => {
             // Installed packages work as commands
@@ -222,7 +230,11 @@ fn help_line(cmd: &str, args: &str, desc: &str) {
 fn help() {
     help_heading("System:");
     help_line("whoami", "", "show current user");
-    help_line("login", "<name>", "switch user (sets the author of new files)");
+    help_line(
+        "login",
+        "<name>",
+        "switch user (sets the author of new files)",
+    );
     help_line("help", "", "show this list");
     help_line("clear", "", "clear the screen");
     help_line("echo", "<text>", "print text");
@@ -230,6 +242,7 @@ fn help() {
     help_line("reboot", "", "restart the machine (alias: restart)");
     help_line("shutdown", "", "power off (alias: poweroff)");
     help_line("zpm", "<command>", "package manager (run 'zpm' for usage)");
+    help_line("crash", "<panic|ud|pf>", "trigger a test crash");
 
     help_heading("Drives and files:");
     help_line("drives", "", "list attached disks");

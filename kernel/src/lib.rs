@@ -1,29 +1,19 @@
 #![no_std]
 #![no_main]
-
-use core::arch::asm;
-use core::panic::PanicInfo;
+#![feature(abi_x86_interrupt)]
 
 mod arch;
 mod ata;
 mod base;
 mod fs;
+mod idt;
 mod keyboard;
 mod package;
+mod panic;
+mod serial;
 mod time;
 mod user;
 mod vga;
-mod serial;
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    slogln!("[PANIC] {}", info);
-    vga::set_color(0x4F);
-    kprintln!("\nKERNEL PANIC: {}", info);
-    loop {
-        unsafe { asm!("hlt") };
-    }
-}
 
 unsafe extern "C" {
     static __bss_start: u8;
@@ -43,6 +33,7 @@ unsafe fn zero_bss() {
 pub extern "C" fn _start() -> ! {
     unsafe { zero_bss() };
     serial::init();
+    idt::init();
     log_info!("ZodiacOS kernel started");
 
     vga::disable_cursor();
