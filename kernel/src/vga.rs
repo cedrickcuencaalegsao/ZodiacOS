@@ -1,6 +1,7 @@
 use crate::arch::outb;
 use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering::Relaxed};
+use crate::kassert;
 
 pub const WIDTH: usize = 80;
 pub const HEIGHT: usize = 25;
@@ -11,6 +12,7 @@ static COL: AtomicUsize = AtomicUsize::new(0);
 static ATTR: AtomicU8 = AtomicU8::new(0x0F);
 
 pub fn put_char(row: usize, col: usize, ch: u8, attr: u8) {
+    kassert!(row < HEIGHT && col < WIDTH, "put_char out of bounds: row {} col {}", row, col);
     let offset = (row * WIDTH + col) * 2;
     unsafe {
         BUFFER.add(offset).write_volatile(ch);

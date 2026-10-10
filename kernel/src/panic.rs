@@ -1,4 +1,4 @@
-use crate::{arch, keyboard, vga};
+use crate::{arch, assertions, keyboard, vga};
 use crate::{kprintln, slogln};
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -19,9 +19,14 @@ fn panic(info: &PanicInfo) -> ! {
         halt();
     }
 
-    slogln!("[PANIC] {}", info);
+    let (tag, title) = if assertions::take_flag() {
+        ("ASSERT", "KERNEL ASSERTION FAILED")
+    } else {
+        ("PANIC", "KERNEL PANIC")
+    };
+    slogln!("[{}] {}", tag, info);
 
-    begin_screen("KERNEL PANIC");
+    begin_screen(title);
     if let Some(loc) = info.location() {
         kprintln!("at {}:{}:{}", loc.file(), loc.line(), loc.column());
     }
@@ -41,12 +46,13 @@ pub fn begin_screen(title: &str) {
     vga::set_color(PANIC_ATTR);
 }
 
-/// Prints the footer, then waits for R (polled, interrupts are off) to restart.
+/// Prints the footer, then waits for R (read straight from the keyboard
+/// controller, since interrupts are off) to restart.
 pub fn finish() -> ! {
     kprintln!();
     kprintln!("System halted. Press R to restart.");
     loop {
-        if let Some(c) = keyboard::read_char() {
+        if let Some(c) = keyboard::poll_char() {
             if c == b'r' || c == b'R' {
                 arch::reboot();
             }

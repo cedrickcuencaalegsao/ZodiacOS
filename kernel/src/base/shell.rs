@@ -1,6 +1,6 @@
 use crate::base::zpm;
-use crate::{arch, ata, fs, keyboard, time, user, vga};
-use crate::{kprint, kprintln};
+use crate::{arch, ata, fs, interrupts, keyboard, time, user, vga};
+use crate::{kassert_eq, kprint, kprintln};
 use core::sync::atomic::{AtomicU16, Ordering::Relaxed};
 
 /// Current folder (fs::ROOT = "/").
@@ -167,13 +167,37 @@ fn execute(line: &str) {
             },
             None => kprintln!("usage: login <name>"),
         },
+        "uptime" => {
+            let ms = interrupts::uptime_ms();
+            kprintln!(
+                "up {}m {}s ({} ticks)",
+                ms / 60_000,
+                ms / 1000 % 60,
+                interrupts::ticks()
+            );
+        }
+        "sleep" => match args.first().and_then(|a| a.parse::<u64>().ok()) {
+            Some(ms) => interrupts::sleep_ms(ms),
+            None => kprintln!("usage: sleep <milliseconds>"),
+        },
         "crash" => match args.first().copied() {
             Some("panic") => panic!("test panic from the shell"),
+            Some("assert") => {
+                let n = args.len();
+                kassert_eq!(n, 99);
+            }
             Some("ud") => unsafe { core::arch::asm!("ud2") },
             Some("pf") => unsafe {
                 let _ = core::ptr::read_volatile(0x4000_0000 as *const u8);
             },
-            _ => kprintln!("usage: crash <panic|ud|pf>"),
+            Some("div") => unsafe {
+                core::arch::asm!(
+                    "xor edx, edx", "mov eax, 1", "xor ecx, ecx", "div ecx",
+                    out("eax") _, out("ecx") _, out("edx") _
+                )
+            },
+            Some("bp") => unsafe { core::arch::asm!("int3") },
+            _ => kprintln!("usage: crash <panic|assert|ud|pf|div|bp>"),
         },
 
         other => {
@@ -242,7 +266,13 @@ fn help() {
     help_line("reboot", "", "restart the machine (alias: restart)");
     help_line("shutdown", "", "power off (alias: poweroff)");
     help_line("zpm", "<command>", "package manager (run 'zpm' for usage)");
-    help_line("crash", "<panic|ud|pf>", "trigger a test crash");
+    help_line("uptime", "", "time since boot");
+    help_line("sleep", "<ms>", "wait using the timer interrupt");
+    help_line(
+        "crash",
+        "<panic|assert|ud|pf|div|bp>",
+        "trigger a test crash",
+    );
 
     help_heading("Drives and files:");
     help_line("drives", "", "list attached disks");

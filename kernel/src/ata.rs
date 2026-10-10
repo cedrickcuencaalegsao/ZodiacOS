@@ -1,3 +1,4 @@
+use crate::kassert;
 use crate::arch::{inb, inw, outb, outw};
 
 #[derive(Clone, Copy)]
@@ -45,6 +46,7 @@ fn wait_drq(io: u16) -> bool {
 }
 
 pub fn identify(drive: u8) -> Option<DriveInfo> {
+    kassert!(drive < 4, "invalid drive id {}", drive);
     if drive > 3 {
         return None;
     }
@@ -108,7 +110,10 @@ fn start_command(drive: u8, lba: u32, cmd: u8) -> Option<u16> {
 }
 
 pub fn read_sector(drive: u8, lba: u32, buf: &mut [u8; 512]) -> bool {
-    let Some(io) = start_command(drive, lba, 0x20) else { return false };
+    kassert!(drive < 4, "invalid drive id {}", drive);
+    let Some(io) = start_command(drive, lba, 0x20) else {
+        return false;
+    };
     if !wait_drq(io) {
         return false;
     }
@@ -121,7 +126,10 @@ pub fn read_sector(drive: u8, lba: u32, buf: &mut [u8; 512]) -> bool {
 }
 
 pub fn write_sector(drive: u8, lba: u32, buf: &[u8; 512]) -> bool {
-    let Some(io) = start_command(drive, lba, 0x30) else { return false };
+    kassert!(drive < 4, "invalid drive id {}", drive);
+    let Some(io) = start_command(drive, lba, 0x30) else {
+        return false;
+    };
     if !wait_drq(io) {
         return false;
     }

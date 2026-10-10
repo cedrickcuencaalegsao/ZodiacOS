@@ -14,6 +14,8 @@ mod serial;
 mod time;
 mod user;
 mod vga;
+mod assertions;
+mod interrupts;
 
 unsafe extern "C" {
     static __bss_start: u8;
@@ -34,6 +36,8 @@ pub extern "C" fn _start() -> ! {
     unsafe { zero_bss() };
     serial::init();
     idt::init();
+    interrupts::init();
+    interrupts::enable();
     log_info!("ZodiacOS kernel started");
 
     vga::disable_cursor();
