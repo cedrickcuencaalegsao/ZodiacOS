@@ -14,15 +14,7 @@ pub fn run() -> ! {
     let mut buf = [0u8; 128];
 
     loop {
-        vga::set_color(0x0A);
-        kprint!("zodiac");
-        if cwd() != fs::ROOT {
-            vga::set_color(0x0B);
-            kprint!(":");
-            print_path(cwd(), 0);
-        }
-        vga::set_color(0x0F);
-        kprint!("> ");
+        print_prompt();
 
         let mut len = 0usize;
         loop {
@@ -61,6 +53,29 @@ fn print_path(id: fs::Id, depth: u8) {
         print_path(e.parent, depth + 1);
         kprint!("/{}", e.name());
     }
+}
+
+fn print_prompt() {
+    let u = user::get();
+
+    vga::set_color(0x0A); // green: username
+    kprint!("{}", user::as_str(&u));
+    vga::set_color(0x0F); // white: @
+    kprint!("@");
+    vga::set_color(0x0B); // light cyan: hostname
+    kprint!("zodiacos");
+    vga::set_color(0x0F);
+    kprint!("/");
+    vga::set_color(0x0E); // yellow: ~ (home = root of hdb)
+    kprint!("~");
+
+    if cwd() != fs::ROOT {
+        vga::set_color(0x09); // light blue: path below ~
+        print_path(cwd(), 0);
+    }
+
+    vga::set_color(0x0F);
+    kprint!("> ");
 }
 
 fn execute(line: &str) {
