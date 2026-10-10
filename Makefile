@@ -1,16 +1,25 @@
 # ---- Config -----------------------------------------------------------------
+
 TARGET     := x86_64-unknown-none
+ARCH       := $(if $(filter x86_64-unknown-none,$(TARGET)),x86_64,$(if $(filter aarch64-unknown-none,$(TARGET)),aarch64,$(TARGET)))
+
+# Read OS version directly from kernel/Cargo.toml
+VERSION := $(shell sed -n '/^\[package\]/,/^\[/p' kernel/Cargo.toml | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+
 BUILD_DIR  := build
-LLD        := /opt/homebrew/bin/ld.lld
-OBJCOPY    := /opt/homebrew/opt/llvm/bin/llvm-objcopy
 
-BOOT_BIN   := $(BUILD_DIR)/boot.bin
-KERNEL_LIB := kernel/target/$(TARGET)/release/libzodiac_os.a
-KERNEL_ELF := $(BUILD_DIR)/kernel.elf
-KERNEL_BIN := $(BUILD_DIR)/kernel.bin
-DISK_IMG   := $(BUILD_DIR)/zodiacos.img
+LLD         := /opt/homebrew/bin/ld.lld
+OBJCOPY     := /opt/homebrew/opt/llvm/bin/llvm-objcopy
 
-ISO_IMG    := $(BUILD_DIR)/zodiacos.iso
+BOOT_BIN    := $(BUILD_DIR)/boot.bin
+
+KERNEL_LIB  := kernel/target/$(TARGET)/release/libzodiac_os.a
+KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
+KERNEL_BIN  := $(BUILD_DIR)/kernel.bin
+
+DISK_IMG    := $(BUILD_DIR)/zodiacos.img
+ISO_IMG    := $(BUILD_DIR)/zodiacos-v$(VERSION)-$(ARCH).iso
+
 ISO_ROOT   := $(BUILD_DIR)/iso
 
 # Data disk lives outside build/ so `make clean` never deletes your files
@@ -85,17 +94,23 @@ $(DATA_IMG):
 	@mkdir -p $(DATA_DIR)
 	dd if=/dev/zero of=$@ bs=1m count=16 status=none
 
+
 # ---- ISO --------------------------------------------------------------------
-# NOTE: this ISO is not bootable yet (no El Torito boot record), see the notes.
+
 iso: $(DISK_IMG)
-	@echo "[ISO]  Creating ZodiacOS ISO..."
+	@echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
 	@mkdir -p $(ISO_ROOT)
 	cp $(DISK_IMG) $(ISO_ROOT)/zodiacos.img
 	xorriso -as mkisofs \
 		-V ZODIACOS \
 		-o $(ISO_IMG) \
 		$(ISO_ROOT)
-	@echo "       ISO created: $(ISO_IMG)"
+	@echo ""
+	@echo "       ISO created successfully!"
+	@echo "       Version:      $(VERSION)"
+	@echo "       Architecture: $(ARCH)"
+	@echo "       Output:       $(ISO_IMG)"
+	@echo ""
 
 iso-inspect: iso
 	@echo "[ISO]  Inspecting ZodiacOS ISO..."
