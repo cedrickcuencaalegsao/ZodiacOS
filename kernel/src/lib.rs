@@ -1,48 +1,62 @@
 #![no_std]
 #![no_main]
-#![feature(abi_x86_interrupt)]
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
+extern crate alloc;
+
+// ---- Architecture-neutral ----
 mod arch;
-mod ata;
-mod base;
-mod fs;
-mod idt;
-mod keyboard;
-mod package;
-mod panic;
-mod serial;
-mod time;
-mod user;
-mod vga;
 mod assertions;
+mod base;
+mod security;
+
+// ---- x86_64 only for now (VGA, PS/2, ATA, PIC/PIT, BIOS memory map) ----
+// Each moves behind a trait as the AArch64 port grows.
+#[cfg(target_arch = "x86_64")]
+mod console;
+#[cfg(target_arch = "x86_64")]
+mod drivers;
+#[cfg(target_arch = "x86_64")]
+mod filesystem;
+#[cfg(target_arch = "x86_64")]
 mod interrupts;
+#[cfg(target_arch = "x86_64")]
+mod legacy;
+#[cfg(target_arch = "x86_64")]
+mod memory;
+#[cfg(target_arch = "x86_64")]
+mod panic;
+#[cfg(target_arch = "x86_64")]
+mod vga;
 
-unsafe extern "C" {
-    static __bss_start: u8;
-    static __bss_end: u8;
-}
+// ---- Transition aliases: old module paths keep working while files migrate ----
+#[cfg(target_arch = "x86_64")]
+#[allow(unused_imports)]
+pub(crate) use {
+    arch::current::interrupts as idt,
+    base::sync,
+    drivers::rtc as time,
+    drivers::storage::ata,
+    drivers::{keyboard, serial},
+    filesystem::zdfs as fs,
+    legacy::package,
+    memory::virtual_memory as paging,
+    memory::{heap, physical as pmm},
+    security::permissions as user,
+};
 
-/// objcopy -O binary doesn't include .bss, and the bootloader doesn't clear it.
-unsafe fn zero_bss() {
-    unsafe {
-        let start = &raw const __bss_start as *mut u8;
-        let end = &raw const __bss_end as *const u8;
-        core::ptr::write_bytes(start, 0, end as usize - start as usize);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    unsafe { zero_bss() };
-    serial::init();
-    idt::init();
+/// Architecture-neutral boot sequence (x86_64 for now; AArch64 has its own
+/// `rust_entry` in arch/aarch64/mod.rs until the shared pieces are ported).
+#[cfg(target_arch = "x86_64")]
+pub fn kernel_main() -> ! {
+    memory::init();
     interrupts::init();
     interrupts::enable();
     log_info!("ZodiacOS kernel started");
 
     vga::disable_cursor();
     vga::clear();
-    base::splash::run(3000);
+    console::splash::run(3000);
     log_info!("splash finished");
 
     vga::clear();
@@ -51,5 +65,5 @@ pub extern "C" fn _start() -> ! {
     kprintln!("Type 'help' for a list of commands.\n");
 
     log_info!("starting shell");
-    base::shell::run()
+    console::terminal::run()
 }

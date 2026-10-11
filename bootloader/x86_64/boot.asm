@@ -1,0 +1,103 @@
+; ZodiacOS x86_64 bootloader: one 512-byte sector.
+; Real mode: read the BIOS memory map, load the kernel, enable A20,
+; then long_mode.asm switches to 64-bit and jumps to the kernel.
+;
+; Files:    boot.asm (this one), gdt.asm, long_mode.asm
+; Assemble: nasm -f bin -I bootloader/x86_64/ -o build/boot.bin bootloader/x86_64/boot.asm
+
+[bits 16]
+[org 0x7C00]
+
+KERNEL_ADDR     equ 0x10000     ; physical load address (kernel/linker.ld must match)
+KERNEL_SEG      equ 0x1000      ; KERNEL_ADDR >> 4
+CHUNK           equ 32          ; sectors per BIOS read (16 KB)
+KERNEL_SECTORS  equ 640         ; 320 KB total, a multiple of CHUNK (Makefile: MAX_KERNEL_BYTES)
+STACK_TOP       equ 0x90000
+
+MEMMAP_ADDR     equ 0x4000      ; BIOS memory map: u32 count, 24-byte entries from +16
+MEMMAP_MAX      equ 32
+
+    jmp short start             ; skip over the GDT data below
+
+%include "gdt.asm"              ; gdt, gdt_ptr, CODE_SEL, DATA_SEL
+
+start:
+    cli
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov sp, 0x7C00
+    sti
+
+    mov [boot_drive], dl        ; BIOS passes the boot drive in DL
+
+    ; ---- Ask the BIOS for the physical memory map (INT 0x15, EAX=0xE820) ----
+    xor  ebx, ebx               ; continuation value, 0 = first call
+    xor  bp, bp                 ; entry count
+    mov  di, MEMMAP_ADDR + 16
+.e820:
+    mov  dword [di + 20], 1     ; ACPI extended-attributes word (bit 0 = valid)
+    mov  eax, 0xE820
+    mov  edx, 0x534D4150        ; 'SMAP'
+    mov  ecx, 24
+    int  0x15
+    jc   .e820_done
+    cmp  eax, 0x534D4150
+    jne  .e820_done
+    inc  bp
+    add  di, 24
+    cmp  bp, MEMMAP_MAX
+    jae  .e820_done
+    test ebx, ebx
+    jnz  .e820
+.e820_done:
+    mov  [MEMMAP_ADDR], bp
+    mov  word [MEMMAP_ADDR + 2], 0
+
+    ; ---- Load the kernel in chunks with BIOS extended read (LBA) ----
+.load:
+    mov  si, dap
+    mov  dl, [boot_drive]
+    mov  ah, 0x42
+    int  0x13
+    jc   disk_error
+    add  word  [dap_seg], CHUNK * 512 / 16      ; advance destination
+    add  dword [dap_lba], CHUNK                 ; advance source sector
+    dec  byte  [chunks_left]
+    jnz  .load
+
+    ; ---- Enable A20 (fast method) ----
+    cli
+    in   al, 0x92
+    or   al, 2
+    and  al, 0xFE               ; never set bit 0 (it resets the CPU)
+    out  0x92, al
+
+    jmp  enter_long_mode        ; defined in long_mode.asm
+
+disk_error:
+    mov  ah, 0x0E
+    mov  al, 'E'
+    int  0x10
+.hang:
+    hlt
+    jmp  .hang
+
+%include "long_mode.asm"        ; enter_long_mode, long_mode_entry
+
+; ---- Data ----
+dap:                            ; Disk Address Packet (updated after each chunk)
+    db 0x10, 0
+    dw CHUNK                    ; sectors per read
+    dw 0x0000                   ; destination offset
+dap_seg:
+    dw KERNEL_SEG               ; destination segment
+dap_lba:
+    dq 1                        ; start at LBA 1
+
+chunks_left: db KERNEL_SECTORS / CHUNK
+boot_drive:  db 0
+
+times 510 - ($ - $$) db 0
+dw 0xAA55
