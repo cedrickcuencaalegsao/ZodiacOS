@@ -1,4 +1,5 @@
-use crate::base::{memcmd, zpm};
+use crate::console::memcmd;
+use crate::legacy::zpm;
 use crate::{arch, ata, fs, interrupts, keyboard, time, user, vga};
 use crate::{kassert_eq, kprint, kprintln};
 use core::sync::atomic::{AtomicU16, Ordering::Relaxed};

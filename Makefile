@@ -1,41 +1,52 @@
 # ---- Config -----------------------------------------------------------------
 
-TARGET     := x86_64-unknown-none
-ARCH       := $(if $(filter x86_64-unknown-none,$(TARGET)),x86_64,$(if $(filter aarch64-unknown-none,$(TARGET)),aarch64,$(TARGET)))
+ARCH       ?= x86_64
+
+# One place to add architectures later
+ifeq ($(ARCH),x86_64)
+  TARGET   := x86_64-unknown-none
+  QEMU     := qemu-system-x86_64
+else
+  $(error ARCH=$(ARCH) is not supported yet, only x86_64 boots for now)
+endif
 
 # Read OS version directly from kernel/Cargo.toml
 VERSION := $(shell sed -n '/^\[package\]/,/^\[/p' kernel/Cargo.toml | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+ifeq ($(VERSION),)
+  VERSION := unknown
+endif
 
 BUILD_DIR  := build
 
-LLD         := /opt/homebrew/bin/ld.lld
-OBJCOPY     := /opt/homebrew/opt/llvm/bin/llvm-objcopy
+LLD        := /opt/homebrew/bin/ld.lld
+OBJCOPY    := /opt/homebrew/opt/llvm/bin/llvm-objcopy
 
-BOOT_BIN    := $(BUILD_DIR)/boot.bin
+# Sources
+BOOT_ASM      := bootloader/$(ARCH)/boot.asm
+BOOT_INCLUDES := $(filter-out $(BOOT_ASM),$(wildcard bootloader/$(ARCH)/*.asm))
+LINKER        := kernel/linker.ld
+KERNEL_SRC    := $(shell find kernel/src -name '*.rs')
 
-KERNEL_LIB  := kernel/target/$(TARGET)/release/libzodiac_os.a
-KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
-KERNEL_BIN  := $(BUILD_DIR)/kernel.bin
+# Build outputs
+BOOT_BIN   := $(BUILD_DIR)/boot.bin
+KERNEL_LIB := kernel/target/$(TARGET)/release/libzodiac_os.a
+KERNEL_ELF := $(BUILD_DIR)/kernel.elf
+KERNEL_BIN := $(BUILD_DIR)/kernel.bin
+DISK_IMG   := $(BUILD_DIR)/zodiacos.img
 
-DISK_IMG    := $(BUILD_DIR)/zodiacos.img
 ISO_IMG    := $(BUILD_DIR)/zodiacos-v$(VERSION)-$(ARCH).iso
-
 ISO_ROOT   := $(BUILD_DIR)/iso
 
 # Data disk lives outside build/ so `make clean` never deletes your files
 DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.img
 
-# Must match KERNEL_SECTORS in bootloader/boot.asm (640 sectors * 512 bytes)
+# Must match KERNEL_SECTORS in bootloader/$(ARCH)/boot.asm (640 sectors * 512 bytes)
 MAX_KERNEL_BYTES := 327680
-
-KERNEL_SRC := $(shell find kernel/src -name '*.rs')
 
 # COM1 output (slog!/log_info! in the kernel) goes to this terminal.
 # To keep the terminal quiet and read logs later, use instead:
 #   -serial file:$(BUILD_DIR)/serial.log
-QEMU       := qemu-system-x86_64\
-
 QEMU_DRIVES := \
 	-m 256M \
 	-rtc base=localtime \
@@ -43,6 +54,7 @@ QEMU_DRIVES := \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
 	-drive format=raw,file=$(DATA_IMG),if=ide,index=1
 
+.DEFAULT_GOAL := all
 .PHONY: all clean clean-disk run run-debug watch dirs iso iso-inspect
 
 # ---- Default ----------------------------------------------------------------
@@ -56,31 +68,31 @@ dirs:
 	@mkdir -p $(BUILD_DIR)
 
 # ---- Bootloader -------------------------------------------------------------
-$(BOOT_BIN): bootloader/boot.asm | dirs
-	@echo "[ASM]  Assembling Bootloader..."
-	nasm -f bin -o $@ $<
+$(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) | dirs
+	@echo "[ASM]  Assembling Bootloader ($(ARCH))..."
+	nasm -f bin -I bootloader/$(ARCH)/ -o $@ $<
 	@test $$(wc -c < $@) -eq 512 || (echo "ERROR: Bootloader is not 512 bytes!" && exit 1)
 	@echo "       $$(wc -c < $@) bytes — OK"
 	@printf "       Boot signature: "; xxd -s 510 -l 2 $@
 
 # ---- Kernel (Rust) ----------------------------------------------------------
 $(KERNEL_LIB): $(KERNEL_SRC) kernel/Cargo.toml
-	@echo "[RUST] Building kernel (release)..."
+	@echo "[RUST] Building kernel (release, $(TARGET))..."
 	cd kernel && cargo +nightly build --release \
 		-Z build-std=core,compiler_builtins,alloc \
 		-Z build-std-features=compiler-builtins-mem \
 		--target $(TARGET)
 
-$(KERNEL_ELF): $(KERNEL_LIB) kernel/src/linker.ld | dirs
+$(KERNEL_ELF): $(KERNEL_LIB) $(LINKER) | dirs
 	@echo "[LD]   Linking kernel ELF..."
-	$(LLD) -u _start -T kernel/src/linker.ld -o $@ $(KERNEL_LIB)
+	$(LLD) -u _start -T $(LINKER) -o $@ $(KERNEL_LIB)
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	@echo "[OBJ]  Extracting flat binary..."
 	$(OBJCOPY) -O binary $< $@
 	@echo "       $$(wc -c < $@) bytes (flat binary)"
 	@test $$(wc -c < $@) -le $(MAX_KERNEL_BYTES) || \
-		(echo "ERROR: kernel exceeds $(MAX_KERNEL_BYTES) bytes. Raise KERNEL_SECTORS in boot.asm and MAX_KERNEL_BYTES here." && exit 1)
+		(echo "ERROR: kernel exceeds $(MAX_KERNEL_BYTES) bytes. Raise KERNEL_SECTORS in $(BOOT_ASM) and MAX_KERNEL_BYTES here." && exit 1)
 
 # ---- Boot disk --------------------------------------------------------------
 $(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN)
@@ -96,9 +108,8 @@ $(DATA_IMG):
 	@mkdir -p $(DATA_DIR)
 	dd if=/dev/zero of=$@ bs=1m count=16 status=none
 
-
 # ---- ISO --------------------------------------------------------------------
-
+# NOTE: this ISO is not bootable yet (no El Torito boot record).
 iso: $(DISK_IMG)
 	@echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
 	@mkdir -p $(ISO_ROOT)
@@ -130,7 +141,7 @@ run-debug: $(DISK_IMG) $(DATA_IMG)
 # ---- Watch mode: rebuild and relaunch QEMU on every save ----------------------
 # Requires: brew install watchexec
 watch:
-	watchexec -r -w kernel/src -w kernel/Cargo.toml -w bootloader -- make run
+	watchexec -r -w kernel/src -w kernel/Cargo.toml -w kernel/linker.ld -w bootloader -- make run
 
 # ---- Clean ------------------------------------------------------------------
 clean:

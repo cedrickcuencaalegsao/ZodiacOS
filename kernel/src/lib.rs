@@ -1,61 +1,48 @@
 #![no_std]
 #![no_main]
-#![feature(abi_x86_interrupt)]
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 extern crate alloc;
 
-mod heap;
-mod paging;
-mod pmm;
-mod sync;
 mod arch;
-mod ata;
-mod base;
-mod fs;
-mod idt;
-mod keyboard;
-mod package;
-mod panic;
-mod serial;
-mod time;
-mod user;
-mod vga;
 mod assertions;
+mod base;
+mod console;
+mod drivers;
+mod filesystem;
 mod interrupts;
+mod legacy;
+mod memory;
+mod panic;
+mod security;
+mod vga;
 
-unsafe extern "C" {
-    static __bss_start: u8;
-    static __bss_end: u8;
-}
+// ---- Transition aliases: old module paths keep working while files migrate ----
+#[allow(unused_imports)]
+pub(crate) use {
+    arch::current::interrupts as idt,
+    base::sync,
+    drivers::rtc as time,
+    drivers::storage::ata,
+    drivers::{keyboard, serial},
+    filesystem::zdfs as fs,
+    legacy::package,
+    memory::virtual_memory as paging,
+    memory::{heap, physical as pmm},
+    security::permissions as user,
+};
 
-/// objcopy -O binary doesn't include .bss, and the bootloader doesn't clear it.
-unsafe fn zero_bss() {
-    unsafe {
-        let start = &raw const __bss_start as *mut u8;
-        let end = &raw const __bss_end as *const u8;
-        core::ptr::write_bytes(start, 0, end as usize - start as usize);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    unsafe { zero_bss() };
-    serial::init();
-    idt::init();
-
-    pmm::init();
-    paging::init();
-    heap::init();
-    let (total, free) = pmm::stats();
-    log_info!("memory: {} frames allocatable, {} free", total, free);
-
+/// Architecture-neutral boot sequence. Each architecture's startup code
+/// (arch/<name>/mod.rs) does its CPU setup, then calls this.
+pub fn kernel_main() -> ! {
+    memory::init(); // physical memory, paging, heap
     interrupts::init();
     interrupts::enable();
     log_info!("ZodiacOS kernel started");
 
     vga::disable_cursor();
     vga::clear();
-    base::splash::run(3000);
+    console::splash::run(3000);
     log_info!("splash finished");
 
     vga::clear();
@@ -64,5 +51,5 @@ pub extern "C" fn _start() -> ! {
     kprintln!("Type 'help' for a list of commands.\n");
 
     log_info!("starting shell");
-    base::shell::run()
+    console::terminal::run()
 }

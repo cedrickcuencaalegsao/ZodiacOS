@@ -1,4 +1,4 @@
-pub mod shell;
-pub mod splash;
-pub mod zpm;
-pub mod memcmd;
+// kernel/src/base/mod.rs
+pub mod error;
+pub mod logging; // placeholder: kprint!/slog! macros move here in step 2
+pub mod sync;
