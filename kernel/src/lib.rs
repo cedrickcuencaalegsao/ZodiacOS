@@ -4,20 +4,33 @@
 
 extern crate alloc;
 
+// ---- Architecture-neutral ----
 mod arch;
 mod assertions;
 mod base;
-mod console;
-mod drivers;
-mod filesystem;
-mod interrupts;
-mod legacy;
-mod memory;
-mod panic;
 mod security;
+
+// ---- x86_64 only for now (VGA, PS/2, ATA, PIC/PIT, BIOS memory map) ----
+// Each moves behind a trait as the AArch64 port grows.
+#[cfg(target_arch = "x86_64")]
+mod console;
+#[cfg(target_arch = "x86_64")]
+mod drivers;
+#[cfg(target_arch = "x86_64")]
+mod filesystem;
+#[cfg(target_arch = "x86_64")]
+mod interrupts;
+#[cfg(target_arch = "x86_64")]
+mod legacy;
+#[cfg(target_arch = "x86_64")]
+mod memory;
+#[cfg(target_arch = "x86_64")]
+mod panic;
+#[cfg(target_arch = "x86_64")]
 mod vga;
 
 // ---- Transition aliases: old module paths keep working while files migrate ----
+#[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
 pub(crate) use {
     arch::current::interrupts as idt,
@@ -32,10 +45,11 @@ pub(crate) use {
     security::permissions as user,
 };
 
-/// Architecture-neutral boot sequence. Each architecture's startup code
-/// (arch/<name>/mod.rs) does its CPU setup, then calls this.
+/// Architecture-neutral boot sequence (x86_64 for now; AArch64 has its own
+/// `rust_entry` in arch/aarch64/mod.rs until the shared pieces are ported).
+#[cfg(target_arch = "x86_64")]
 pub fn kernel_main() -> ! {
-    memory::init(); // physical memory, paging, heap
+    memory::init();
     interrupts::init();
     interrupts::enable();
     log_info!("ZodiacOS kernel started");
