@@ -2,6 +2,12 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
+extern crate alloc;
+
+mod heap;
+mod paging;
+mod pmm;
+mod sync;
 mod arch;
 mod ata;
 mod base;
@@ -36,6 +42,13 @@ pub extern "C" fn _start() -> ! {
     unsafe { zero_bss() };
     serial::init();
     idt::init();
+
+    pmm::init();
+    paging::init();
+    heap::init();
+    let (total, free) = pmm::stats();
+    log_info!("memory: {} frames allocatable, {} free", total, free);
+
     interrupts::init();
     interrupts::enable();
     log_info!("ZodiacOS kernel started");

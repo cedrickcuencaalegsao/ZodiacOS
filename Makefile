@@ -34,8 +34,10 @@ KERNEL_SRC := $(shell find kernel/src -name '*.rs')
 # COM1 output (slog!/log_info! in the kernel) goes to this terminal.
 # To keep the terminal quiet and read logs later, use instead:
 #   -serial file:$(BUILD_DIR)/serial.log
-QEMU       := qemu-system-x86_64
+QEMU       := qemu-system-x86_64\
+
 QEMU_DRIVES := \
+	-m 256M \
 	-rtc base=localtime \
 	-serial stdio \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
@@ -65,7 +67,7 @@ $(BOOT_BIN): bootloader/boot.asm | dirs
 $(KERNEL_LIB): $(KERNEL_SRC) kernel/Cargo.toml
 	@echo "[RUST] Building kernel (release)..."
 	cd kernel && cargo +nightly build --release \
-		-Z build-std=core,compiler_builtins \
+		-Z build-std=core,compiler_builtins,alloc \
 		-Z build-std-features=compiler-builtins-mem \
 		--target $(TARGET)
 

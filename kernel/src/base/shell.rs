@@ -1,4 +1,4 @@
-use crate::base::zpm;
+use crate::base::{memcmd, zpm};
 use crate::{arch, ata, fs, interrupts, keyboard, time, user, vga};
 use crate::{kassert_eq, kprint, kprintln};
 use core::sync::atomic::{AtomicU16, Ordering::Relaxed};
@@ -196,9 +196,17 @@ fn execute(line: &str) {
                     out("eax") _, out("ecx") _, out("edx") _
                 )
             },
+            Some("null") => unsafe {
+                let _ = core::ptr::read_volatile(0x10 as *const u8);
+            },
+            Some("write") => unsafe {
+                // the shell's own machine code lives in read-only pages
+                core::ptr::write_volatile(execute as *const () as *mut u8, 0);
+            },
             Some("bp") => unsafe { core::arch::asm!("int3") },
             _ => kprintln!("usage: crash <panic|assert|ud|pf|div|bp>"),
         },
+        "meminfo" | "memmap" | "vmem" | "memtest" | "vmtest" => memcmd::run(parts[0], args),
 
         other => {
             // Installed packages work as commands
@@ -286,6 +294,13 @@ fn help() {
     help_line("cat", "<file>", "show a file");
     help_line("rm", "<name>", "delete a file or empty folder");
     help_line("df", "", "disk usage");
+
+    help_heading("Memory:");
+    help_line("meminfo", "", "physical memory and heap usage");
+    help_line("memmap", "", "memory map from the BIOS");
+    help_line("vmem", "<hex addr>", "show how an address is mapped");
+    help_line("memtest", "", "allocate with Vec, String and Box");
+    help_line("vmtest", "", "build and destroy a second address space");
 
     vga::set_color(HELP_DESC);
     kprintln!("Installed packages can be run by name.");

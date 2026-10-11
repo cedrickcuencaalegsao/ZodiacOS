@@ -10,6 +10,9 @@ CHUNK           equ 32          ; sectors per BIOS read (16 KB)
 KERNEL_SECTORS  equ 640         ; 320 KB total, must be a multiple of CHUNK
 STACK_TOP       equ 0x90000
 
+MEMMAP_ADDR     equ 0x4000      ; BIOS memory map: u32 count, 24-byte entries from +16
+MEMMAP_MAX      equ 32
+
 PML4            equ 0x1000
 PDPT            equ 0x2000
 PD              equ 0x3000
@@ -25,6 +28,29 @@ start:
 
     mov [boot_drive], dl        ; BIOS passes boot drive in DL
 
+    ; ---- Ask the BIOS for the physical memory map (INT 0x15, EAX=0xE820) ----
+    xor  ebx, ebx               ; continuation value, 0 = first call
+    xor  bp, bp                 ; entry count
+    mov  di, MEMMAP_ADDR + 16
+.e820:
+    mov  dword [di + 20], 1     ; ACPI extended-attributes word (bit 0 = valid)
+    mov  eax, 0xE820
+    mov  edx, 0x534D4150        ; 'SMAP'
+    mov  ecx, 24
+    int  0x15
+    jc   .e820_done
+    cmp  eax, 0x534D4150
+    jne  .e820_done
+    inc  bp
+    add  di, 24
+    cmp  bp, MEMMAP_MAX
+    jae  .e820_done
+    test ebx, ebx
+    jnz  .e820
+.e820_done:
+    mov  [MEMMAP_ADDR], bp
+    mov  word [MEMMAP_ADDR + 2], 0
+
     ; ---- Load kernel in chunks with BIOS extended read (LBA) ----
 .load:
     mov si, dap
@@ -32,8 +58,8 @@ start:
     mov ah, 0x42
     int 0x13
     jc  disk_error
-    add word  [dap_seg], CHUNK * 512 / 16   ; advance destination
-    add dword [dap_lba], CHUNK              ; advance source sector
+    add word  [dap_seg], CHUNK * 512 / 16
+    add dword [dap_lba], CHUNK
     dec byte  [chunks_left]
     jnz .load
 
@@ -114,7 +140,7 @@ gdt_ptr:
 
 dap:                            ; Disk Address Packet (updated each chunk)
     db 0x10, 0
-    dw CHUNK                    ; sectors per read
+    dw CHUNK
     dw 0x0000                   ; destination offset
 dap_seg:
     dw KERNEL_SEG               ; destination segment
