@@ -13,6 +13,7 @@ pub mod aarch64;
 pub use aarch64 as current;
 
 // Architecture-neutral operations
+#[allow(unused_imports)]
 pub use current::cpu::{halt, reboot, shutdown, sleep_ms};
 
 // Port I/O exists only on x86. Drivers that use it are x86-only too.
