@@ -20,3 +20,4 @@ lto           = true
 codegen-units = 1
 
 [dependencies]
+login-manager = { path = "../userspace/login-manager" }

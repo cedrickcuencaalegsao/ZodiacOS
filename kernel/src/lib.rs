@@ -58,14 +58,25 @@ pub fn kernel_main() -> ! {
 
     vga::disable_cursor();
     vga::clear();
-    console::splash::run(3000);
+    console::splash::run(7000);
     log_info!("splash finished");
 
     vga::clear();
     vga::enable_cursor();
+    vga::clear();
+    vga::enable_cursor();
+
+    log_info!("starting login");
+    let session = console::login::run();
+    log_info!("user '{}' logged in (uid {})", session.name, session.uid);
+
+    // ADAPT: record the current user so permissions/terminal can use it
+    // user::set_current(session.uid, session.gid);
+
+    vga::clear();
     kprintln!("ZodiacOS 0.1.0");
     kprintln!("Type 'help' for a list of commands.\n");
 
     log_info!("starting shell");
-    console::terminal::run()
+    console::terminal::run();
 }
