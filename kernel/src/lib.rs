@@ -58,13 +58,10 @@ pub fn kernel_main() -> ! {
 
     vga::disable_cursor();
     vga::clear();
-    console::splash::run(7000);
+    console::splash::run(3000);
     log_info!("splash finished");
 
     vga::clear();
-    vga::enable_cursor();
-    vga::clear();
-    vga::enable_cursor();
 
     log_info!("starting login");
     let session = console::login::run();

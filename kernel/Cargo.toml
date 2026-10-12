@@ -21,3 +21,4 @@ codegen-units = 1
 
 [dependencies]
 login-manager = { path = "../userspace/login-manager" }
+sha2 = { version = "0.10", default-features = false }

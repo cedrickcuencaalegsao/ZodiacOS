@@ -7,3 +7,10 @@ pub struct Session {
     pub name: String,
     pub home: String,
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuthError {
+    InvalidCredentials,
+    WeakPassword,
+    AlreadySetUp,
+}
