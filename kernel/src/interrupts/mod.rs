@@ -1,14 +1,33 @@
 use crate::arch::outb;
 use crate::idt::{self, Frame};
-use crate::{keyboard, kassert};
+use crate::{kassert, keyboard};
 use core::arch::asm;
-use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 pub const TIMER_HZ: u32 = 100; // 10 ms per tick
 const PIT_BASE_HZ: u32 = 1_193_182;
 const IRQ_BASE: u8 = 32; // master PIC vectors 32..39, slave PIC 40..47
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+static TICK_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// Registers a function that runs on every timer tick (100 times a second, with
+/// interrupts off). The scheduler will use this to switch tasks.
+#[allow(dead_code)]
+pub fn set_tick_hook(hook: fn(u64)) {
+    TICK_HOOK.store(hook as usize, Relaxed);
+}
+
+extern "x86-interrupt" fn timer_irq(_f: Frame) {
+    let tick = TICKS.fetch_add(1, Relaxed) + 1;
+    eoi(0); // acknowledge first, so a task switch inside the hook can't block the PIC
+    let hook = TICK_HOOK.load(Relaxed);
+    if hook != 0 {
+        let hook: fn(u64) = unsafe { core::mem::transmute(hook) };
+        hook(tick);
+    }
+}
 
 fn io_wait() {
     unsafe { outb(0x80, 0) }; // a write to an unused port gives the PIC time to settle
@@ -18,14 +37,22 @@ fn io_wait() {
 /// (IRQ0 would look like a double fault). Move them to 32..47.
 fn remap_pic() {
     unsafe {
-        outb(0x20, 0x11); io_wait(); // start init (cascade mode)
-        outb(0xA0, 0x11); io_wait();
-        outb(0x21, IRQ_BASE); io_wait(); // master vector offset
-        outb(0xA1, IRQ_BASE + 8); io_wait(); // slave vector offset
-        outb(0x21, 0x04); io_wait(); // slave sits on master IRQ2
-        outb(0xA1, 0x02); io_wait();
-        outb(0x21, 0x01); io_wait(); // 8086 mode
-        outb(0xA1, 0x01); io_wait();
+        outb(0x20, 0x11);
+        io_wait(); // start init (cascade mode)
+        outb(0xA0, 0x11);
+        io_wait();
+        outb(0x21, IRQ_BASE);
+        io_wait(); // master vector offset
+        outb(0xA1, IRQ_BASE + 8);
+        io_wait(); // slave vector offset
+        outb(0x21, 0x04);
+        io_wait(); // slave sits on master IRQ2
+        outb(0xA1, 0x02);
+        io_wait();
+        outb(0x21, 0x01);
+        io_wait(); // 8086 mode
+        outb(0xA1, 0x01);
+        io_wait();
 
         outb(0x21, 0xFC); // unmask IRQ0 (timer) and IRQ1 (keyboard) only
         outb(0xA1, 0xFF);
@@ -51,10 +78,10 @@ fn eoi(irq: u8) {
     }
 }
 
-extern "x86-interrupt" fn timer_irq(_f: Frame) {
-    TICKS.fetch_add(1, Relaxed);
-    eoi(0);
-}
+// extern "x86-interrupt" fn timer_irq(_f: Frame) {
+//     TICKS.fetch_add(1, Relaxed);
+//     eoi(0);
+// }
 
 extern "x86-interrupt" fn keyboard_irq(_f: Frame) {
     keyboard::handle_irq();
@@ -73,6 +100,7 @@ pub fn enable() {
     unsafe { asm!("sti", options(nomem, nostack)) };
 }
 
+#[allow(dead_code)]
 pub fn disable() {
     unsafe { asm!("cli", options(nomem, nostack)) };
 }
@@ -93,7 +121,10 @@ pub fn uptime_ms() -> u64 {
 
 /// Sleeps with `hlt` so the CPU idles between ticks. Needs interrupts enabled.
 pub fn sleep_ms(ms: u64) {
-    kassert!(enabled(), "sleep_ms called with interrupts disabled, it would hang forever");
+    kassert!(
+        enabled(),
+        "sleep_ms called with interrupts disabled, it would hang forever"
+    );
     let target = ticks() + (ms * TIMER_HZ as u64 + 999) / 1000;
     while ticks() < target {
         unsafe { asm!("hlt", options(nomem, nostack)) };

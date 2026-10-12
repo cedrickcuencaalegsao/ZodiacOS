@@ -51,6 +51,7 @@ pub(crate) use {
 #[cfg(target_arch = "x86_64")]
 pub fn kernel_main() -> ! {
     memory::init();
+    drivers::init();
     interrupts::init();
     interrupts::enable();
     log_info!("ZodiacOS kernel started");

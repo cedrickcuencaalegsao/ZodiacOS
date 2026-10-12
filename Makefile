@@ -74,10 +74,13 @@ MAX_KERNEL_BYTES := 327680
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m 256M \
+	-vga std \
+	-display cocoa,zoom-to-fit=on \
 	-rtc base=localtime \
 	-serial stdio \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
 	-drive format=raw,file=$(DATA_IMG),if=ide,index=1
+# To see a USB controller in `lspci`, add:  -device qemu-xhci -device usb-kbd
 
 all: $(DISK_IMG) $(DATA_IMG)
 	@echo ""

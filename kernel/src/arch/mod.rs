@@ -18,4 +18,4 @@ pub use current::cpu::{halt, reboot, shutdown, sleep_ms};
 
 // Port I/O exists only on x86. Drivers that use it are x86-only too.
 #[cfg(target_arch = "x86_64")]
-pub use current::port_io::{inb, inw, outb, outw};
+pub use current::port_io::{inb, inl, inw, outb, outl, outw};

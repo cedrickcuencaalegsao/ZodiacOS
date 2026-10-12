@@ -1,4 +1,4 @@
-use crate::console::memcmd;
+use crate::console::{hwcmd, memcmd};
 use crate::legacy::zpm;
 use crate::{arch, ata, fs, interrupts, keyboard, time, user, vga};
 use crate::{kassert_eq, kprint, kprintln};
@@ -208,6 +208,7 @@ fn execute(line: &str) {
             _ => kprintln!("usage: crash <panic|assert|ud|pf|div|bp>"),
         },
         "meminfo" | "memmap" | "vmem" | "memtest" | "vmtest" => memcmd::run(parts[0], args),
+        "lspci" | "display" => hwcmd::run(parts[0]),
 
         other => {
             // Installed packages work as commands
@@ -302,6 +303,10 @@ fn help() {
     help_line("vmem", "<hex addr>", "show how an address is mapped");
     help_line("memtest", "", "allocate with Vec, String and Box");
     help_line("vmtest", "", "build and destroy a second address space");
+
+    help_heading("Hardware:");
+    help_line("lspci", "", "list PCI devices");
+    help_line("display", "", "show the screen mode");
 
     vga::set_color(HELP_DESC);
     kprintln!("Installed packages can be run by name.");

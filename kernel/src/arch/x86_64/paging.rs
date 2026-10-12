@@ -79,7 +79,12 @@ unsafe fn next_table(table: *mut u64, i: usize, user: bool) -> Result<*mut u64, 
 
 /// Maps one 4 KiB page. `flags` are WRITABLE / USER / NX / PCD (PRESENT is added).
 pub fn map_page(pml4: u64, virt: u64, phys: u64, flags: u64) -> Result<(), &'static str> {
-    kassert!(virt % 4096 == 0 && phys % 4096 == 0, "map_page: unaligned {:#x} -> {:#x}", virt, phys);
+    kassert!(
+        virt % 4096 == 0 && phys % 4096 == 0,
+        "map_page: unaligned {:#x} -> {:#x}",
+        virt,
+        phys
+    );
     let user = flags & USER != 0;
     unsafe {
         let mut t = pml4 as *mut u64;
@@ -110,6 +115,22 @@ fn map_huge(pml4: u64, virt: u64, phys: u64, flags: u64) -> Result<(), &'static 
         slot.write(phys | flags | PRESENT | HUGE);
     }
     Ok(())
+}
+
+/// Maps device memory (virtual = physical), uncached. Returns the virtual address.
+pub fn map_mmio(phys: u64, len: u64) -> Result<u64, &'static str> {
+    const HUGE_SIZE: u64 = 2 << 20;
+    let pml4 = kernel_pml4();
+    let start = phys & !(HUGE_SIZE - 1);
+    let end = (phys + len + HUGE_SIZE - 1) & !(HUGE_SIZE - 1);
+    let mut addr = start;
+    while addr < end {
+        if translate(pml4, addr).is_none() {
+            map_huge(pml4, addr, addr, PRESENT | WRITABLE | NX | PCD)?;
+        }
+        addr += HUGE_SIZE;
+    }
+    Ok(phys)
 }
 
 /// Removes a 4 KiB mapping and returns the physical frame it pointed at.
@@ -163,7 +184,13 @@ pub fn translate(pml4: u64, virt: u64) -> Option<Mapping> {
                     _ => 4096,
                 };
                 let base = e & ADDR_MASK & !(size - 1);
-                return Some(Mapping { phys: base | (virt & (size - 1)), writable, user, nx, size });
+                return Some(Mapping {
+                    phys: base | (virt & (size - 1)),
+                    writable,
+                    user,
+                    nx,
+                    size,
+                });
             }
             table = (e & ADDR_MASK) as *const u64;
         }
@@ -223,8 +250,8 @@ fn sym(p: *const u8) -> u64 {
 
 /// Permissions for the kernel's own pages (the first 2 MiB).
 fn kernel_page_flags(addr: u64) -> u64 {
-    let text = unsafe { sym(&raw const __text_start)..sym(&raw const __text_end) };
-    let rodata = unsafe { sym(&raw const __rodata_start)..sym(&raw const __rodata_end) };
+    let text = sym(&raw const __text_start)..sym(&raw const __text_end);
+    let rodata = sym(&raw const __rodata_start)..sym(&raw const __rodata_end);
     if text.contains(&addr) {
         PRESENT // read + execute
     } else if rodata.contains(&addr) {
@@ -264,7 +291,7 @@ pub fn init() {
     let max_phys = pmm::max_phys().min(4 << 30);
     kassert!(max_phys > (2 << 20), "paging needs more than 2 MiB of RAM");
     kassert!(
-        unsafe { &raw const __kernel_end as usize } <= 0x8_0000,
+        &raw const __kernel_end as usize <= 0x8_0000,
         "kernel image reaches the boot stack at 0x80000"
     );
 

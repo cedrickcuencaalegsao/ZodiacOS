@@ -210,6 +210,7 @@ pub fn free_frame(addr: u64) {
     }
 }
 
+#[allow(dead_code)]
 pub fn free_contiguous(addr: u64, count: usize) {
     for k in 0..count as u64 {
         free_frame(addr + k * FRAME_SIZE);

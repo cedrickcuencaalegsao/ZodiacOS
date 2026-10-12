@@ -1,8 +1,9 @@
 use crate::arch::outb;
+use crate::console::fbcon;
 use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering::Relaxed};
-use crate::kassert;
 
+// Text-mode geometry (only used until the framebuffer takes over)
 pub const WIDTH: usize = 80;
 pub const HEIGHT: usize = 25;
 const BUFFER: *mut u8 = 0xb8000 as *mut u8;
@@ -11,8 +12,26 @@ static ROW: AtomicUsize = AtomicUsize::new(0);
 static COL: AtomicUsize = AtomicUsize::new(0);
 static ATTR: AtomicU8 = AtomicU8::new(0x0F);
 
+/// Screen size in characters, whichever mode is active.
+pub fn width() -> usize {
+    if fbcon::active() { fbcon::cols() } else { WIDTH }
+}
+
+pub fn height() -> usize {
+    if fbcon::active() { fbcon::rows() } else { HEIGHT }
+}
+
+pub fn attr() -> u8 {
+    ATTR.load(Relaxed)
+}
+
 pub fn put_char(row: usize, col: usize, ch: u8, attr: u8) {
-    kassert!(row < HEIGHT && col < WIDTH, "put_char out of bounds: row {} col {}", row, col);
+    if fbcon::active() {
+        return fbcon::put_char(row, col, ch, attr);
+    }
+    if row >= HEIGHT || col >= WIDTH {
+        return;
+    }
     let offset = (row * WIDTH + col) * 2;
     unsafe {
         BUFFER.add(offset).write_volatile(ch);
@@ -28,9 +47,15 @@ pub fn print_at(row: usize, col: usize, msg: &[u8], attr: u8) {
 
 pub fn set_color(attr: u8) {
     ATTR.store(attr, Relaxed);
+    if fbcon::active() {
+        fbcon::set_color(attr);
+    }
 }
 
 pub fn clear() {
+    if fbcon::active() {
+        return fbcon::clear();
+    }
     let attr = ATTR.load(Relaxed);
     for row in 0..HEIGHT {
         for col in 0..WIDTH {
@@ -60,6 +85,9 @@ fn scroll() {
 }
 
 pub fn put_byte(b: u8) {
+    if fbcon::active() {
+        return fbcon::put_byte(b);
+    }
     let attr = ATTR.load(Relaxed);
     let mut row = ROW.load(Relaxed);
     let mut col = COL.load(Relaxed);
@@ -102,8 +130,11 @@ pub fn backspace() {
     put_byte(8);
 }
 
-// ---- Hardware cursor --------------------------------------------------------
+// ---- Hardware cursor (text mode only; the framebuffer draws its own) ------------
 pub fn update_cursor() {
+    if fbcon::active() {
+        return;
+    }
     let pos = (ROW.load(Relaxed) * WIDTH + COL.load(Relaxed)) as u16;
     unsafe {
         outb(0x3D4, 0x0F);
@@ -114,6 +145,9 @@ pub fn update_cursor() {
 }
 
 pub fn disable_cursor() {
+    if fbcon::active() {
+        return fbcon::set_cursor(false);
+    }
     unsafe {
         outb(0x3D4, 0x0A);
         outb(0x3D5, 0x20);
@@ -121,6 +155,9 @@ pub fn disable_cursor() {
 }
 
 pub fn enable_cursor() {
+    if fbcon::active() {
+        return fbcon::set_cursor(true);
+    }
     unsafe {
         outb(0x3D4, 0x0A);
         outb(0x3D5, 0x0E);
@@ -129,7 +166,7 @@ pub fn enable_cursor() {
     }
 }
 
-// ---- kprint! / kprintln! ----------------------------------------------------
+// ---- kprint! / kprintln! -----------------------------------------------------------
 pub struct Writer;
 
 impl fmt::Write for Writer {
