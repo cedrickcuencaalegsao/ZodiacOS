@@ -39,6 +39,7 @@ pub fn put_char(row: usize, col: usize, ch: u8, attr: u8) {
     }
 }
 
+#[allow(dead_code)]
 pub fn print_at(row: usize, col: usize, msg: &[u8], attr: u8) {
     for (i, &b) in msg.iter().enumerate() {
         put_char(row, col + i, b, attr);

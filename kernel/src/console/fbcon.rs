@@ -175,6 +175,34 @@ pub fn info() -> Option<(usize, usize, usize, usize, usize)> {
     with(|c| (c.fb.width, c.fb.height, c.fb.base, c.cols, c.rows))
 }
 
+/// Framebuffer size in pixels, or (0, 0) if the framebuffer console isn't active.
+pub fn pixel_size() -> (usize, usize) {
+    with(|c| (c.fb.width, c.fb.height)).unwrap_or((0, 0))
+}
+
+/// Fill a pixel rectangle with 0xRRGGBB, clipped to the screen. Bypasses the
+/// text grid, so it's for splash/graphics only (vga::clear() resets afterwards).
+// pub fn fill_px(x: usize, y: usize, w: usize, h: usize, rgb: u32) {
+//     with(|c| {
+//         if x >= c.fb.width || y >= c.fb.height {
+//             return;
+//         }
+//         let w = w.min(c.fb.width - x);
+//         let h = h.min(c.fb.height - y);
+//         if w > 0 && h > 0 {
+//             c.fb.fill_rect(x, y, w, h, rgb);
+//         }
+//     });
+// }
+pub fn fill_px(x: usize, y: usize, w: usize, h: usize, rgb: u32) {
+    with(|c| c.fb.fill_rect(x, y, w, h, rgb));
+}
+
+/// Same as `fill_px` with a gray level 0..=255.
+pub fn fill_gray(x: usize, y: usize, w: usize, h: usize, v: u8) {
+    fill_px(x, y, w, h, v as u32 * 0x01_01_01);
+}
+
 pub fn put_char(row: usize, col: usize, ch: u8, attr: u8) {
     with(|c| {
         if row < c.rows && col < c.cols {
