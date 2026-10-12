@@ -9,8 +9,8 @@ const CELL_H: usize = 16;
 
 /// The standard 16 VGA colors (attribute: low nibble = text, high nibble = background).
 const PALETTE: [u32; 16] = [
-    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
-    0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
+    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA, 0x555555,
+    0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 ];
 
 struct Shared<T>(UnsafeCell<T>);
@@ -19,7 +19,8 @@ unsafe impl<T> Sync for Shared<T> {}
 // One entry per character cell: (attribute << 8) | character.
 // The console has no lock on purpose: the panic screen must be able to print
 // even if a panic interrupted the console itself. Single core, no IRQ printing.
-static CELLS: Shared<[u16; MAX_COLS * MAX_ROWS]> = Shared(UnsafeCell::new([0; MAX_COLS * MAX_ROWS]));
+static CELLS: Shared<[u16; MAX_COLS * MAX_ROWS]> =
+    Shared(UnsafeCell::new([0; MAX_COLS * MAX_ROWS]));
 static CONSOLE: Shared<Option<Console>> = Shared(UnsafeCell::new(None));
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -47,7 +48,8 @@ impl Console {
         if self.cursor_drawn && r == self.row && c == self.col {
             core::mem::swap(&mut fg, &mut bg); // block cursor = inverted cell
         }
-        self.fb.draw_glyph(c * CELL_W, r * CELL_H, framebuffer::glyph(ch), fg, bg);
+        self.fb
+            .draw_glyph(c * CELL_W, r * CELL_H, framebuffer::glyph(ch), fg, bg);
     }
 
     fn set_char(&mut self, r: usize, c: usize, ch: u8, attr: u8) {
@@ -81,7 +83,8 @@ impl Console {
                 grid[r * MAX_COLS + c] = blank;
             }
         }
-        self.fb.fill_rect(0, 0, self.fb.width, self.fb.height, self.background());
+        self.fb
+            .fill_rect(0, 0, self.fb.width, self.fb.height, self.background());
         self.row = 0;
         self.col = 0;
         self.cursor_drawn = false;
@@ -98,7 +101,13 @@ impl Console {
         self.fb.scroll_up(CELL_H);
         // clear the new last row (and any leftover pixels below the last full row)
         let top = (self.rows - 1) * CELL_H;
-        self.fb.fill_rect(0, top, self.fb.width, self.fb.height - top, self.background());
+        self.fb.fill_rect(
+            0,
+            top,
+            self.fb.width,
+            self.fb.height - top,
+            self.background(),
+        );
     }
 
     fn put_byte(&mut self, b: u8) {
@@ -180,20 +189,9 @@ pub fn pixel_size() -> (usize, usize) {
     with(|c| (c.fb.width, c.fb.height)).unwrap_or((0, 0))
 }
 
-/// Fill a pixel rectangle with 0xRRGGBB, clipped to the screen. Bypasses the
-/// text grid, so it's for splash/graphics only (vga::clear() resets afterwards).
-// pub fn fill_px(x: usize, y: usize, w: usize, h: usize, rgb: u32) {
-//     with(|c| {
-//         if x >= c.fb.width || y >= c.fb.height {
-//             return;
-//         }
-//         let w = w.min(c.fb.width - x);
-//         let h = h.min(c.fb.height - y);
-//         if w > 0 && h > 0 {
-//             c.fb.fill_rect(x, y, w, h, rgb);
-//         }
-//     });
-// }
+// ---- Pixel graphics (bypass the text grid; call vga::clear() afterwards) --------
+
+/// Fill a pixel rectangle with 0xRRGGBB, clipped to the screen.
 pub fn fill_px(x: usize, y: usize, w: usize, h: usize, rgb: u32) {
     with(|c| c.fb.fill_rect(x, y, w, h, rgb));
 }
@@ -202,6 +200,32 @@ pub fn fill_px(x: usize, y: usize, w: usize, h: usize, rgb: u32) {
 pub fn fill_gray(x: usize, y: usize, w: usize, h: usize, v: u8) {
     fill_px(x, y, w, h, v as u32 * 0x01_01_01);
 }
+
+/// Vertical gradient from `top` to `bottom` (0xRRGGBB).
+pub fn gradient(x: usize, y: usize, w: usize, h: usize, top: u32, bottom: u32) {
+    with(|c| c.fb.fill_gradient(x, y, w, h, top, bottom));
+}
+
+/// Anti-aliased rounded rectangle with alpha 0..=255.
+pub fn round_rect(x: usize, y: usize, w: usize, h: usize, r: usize, rgb: u32, alpha: u8) {
+    with(|c| c.fb.fill_round_rect(x, y, w, h, r, rgb, alpha));
+}
+
+/// Width in pixels of `s` drawn with `text()` at the given integer scale.
+pub fn text_width(s: &str, scale: usize) -> usize {
+    s.len() * CELL_W * scale
+}
+
+/// Pixel-positioned text with a transparent background.
+pub fn text(x: usize, y: usize, s: &str, scale: usize, rgb: u32) {
+    with(|c| {
+        for (i, b) in s.bytes().enumerate() {
+            c.fb.draw_glyph_scaled(x + i * CELL_W * scale, y, framebuffer::glyph(b), scale, rgb);
+        }
+    });
+}
+
+// ---- Text grid -------------------------------------------------------------------
 
 pub fn put_char(row: usize, col: usize, ch: u8, attr: u8) {
     with(|c| {

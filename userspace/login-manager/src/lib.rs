@@ -14,8 +14,22 @@ use user_accounts::UserInfo;
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Color {
-    Black = 0, Blue, Green, Cyan, Red, Magenta, Brown, LightGray,
-    DarkGray, LightBlue, LightGreen, LightCyan, LightRed, Pink, Yellow, White,
+    Black = 0,
+    Blue,
+    Green,
+    Cyan,
+    Red,
+    Magenta,
+    Brown,
+    LightGray,
+    DarkGray,
+    LightBlue,
+    LightGreen,
+    LightCyan,
+    LightRed,
+    Pink,
+    Yellow,
+    White,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,6 +57,10 @@ pub trait Platform {
     fn list_users(&self) -> Vec<UserInfo>;
     fn authenticate(&mut self, name: &str, password: &str) -> Result<Session, AuthError>;
     fn create_root(&mut self, password: &str) -> Result<(), AuthError>;
+    
+    fn gfx(&mut self) -> Option<&mut dyn Gfx> {
+        None
+    }
 }
 
 /// Entry point the kernel calls instead of starting the terminal.
@@ -61,7 +79,15 @@ pub fn text<P: Platform>(p: &mut P, x: usize, y: usize, s: &str, fg: Color, bg: 
     }
 }
 
-pub fn centered<P: Platform>(p: &mut P, x: usize, w: usize, y: usize, s: &str, fg: Color, bg: Color) {
+pub fn centered<P: Platform>(
+    p: &mut P,
+    x: usize,
+    w: usize,
+    y: usize,
+    s: &str,
+    fg: Color,
+    bg: Color,
+) {
     let len = s.chars().count();
     text(p, x + w.saturating_sub(len) / 2, y, s, fg, bg);
 }
@@ -74,7 +100,15 @@ pub fn fill<P: Platform>(p: &mut P, x: usize, y: usize, w: usize, h: usize, bg: 
     }
 }
 
-pub fn border<P: Platform>(p: &mut P, x: usize, y: usize, w: usize, h: usize, fg: Color, bg: Color) {
+pub fn border<P: Platform>(
+    p: &mut P,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    fg: Color,
+    bg: Color,
+) {
     for xx in x + 1..x + w - 1 {
         p.put_char(xx, y, '-', fg, bg);
         p.put_char(xx, y + h - 1, '-', fg, bg);
@@ -83,7 +117,20 @@ pub fn border<P: Platform>(p: &mut P, x: usize, y: usize, w: usize, h: usize, fg
         p.put_char(x, yy, '|', fg, bg);
         p.put_char(x + w - 1, yy, '|', fg, bg);
     }
-    for (cx, cy) in [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)] {
+    for (cx, cy) in [
+        (x, y),
+        (x + w - 1, y),
+        (x, y + h - 1),
+        (x + w - 1, y + h - 1),
+    ] {
         p.put_char(cx, cy, '+', fg, bg);
     }
+}
+
+pub trait Gfx {
+    fn size_px(&self) -> (usize, usize);
+    fn gradient(&mut self, x: usize, y: usize, w: usize, h: usize, top: u32, bottom: u32);
+    fn round_rect(&mut self, x: usize, y: usize, w: usize, h: usize, r: usize, rgb: u32, alpha: u8);
+    fn text(&mut self, x: usize, y: usize, s: &str, scale: usize, rgb: u32);
+    fn text_width(&self, s: &str, scale: usize) -> usize;
 }
