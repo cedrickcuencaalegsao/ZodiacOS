@@ -140,7 +140,11 @@ pub fn wait_char() -> u8 {
         if let Some(c) = read_char() {
             return c;
         }
-        unsafe { asm!("hlt", options(nomem, nostack)) };
+        if crate::scheduler::ready() {
+            crate::scheduler::sleep_ms(10); // other threads run in the meantime
+        } else {
+            unsafe { asm!("hlt", options(nomem, nostack)) };
+        }
     }
 }
 

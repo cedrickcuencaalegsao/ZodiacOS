@@ -19,6 +19,7 @@ pub enum Error {
     BadFileDescriptor,
     ReadOnly,
     Unsupported,
+    BadAddress,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -42,7 +43,8 @@ impl Error {
             Error::NameTooLong => 36,
             Error::Unsupported => 38,
             Error::NotEmpty => 39,
-        }
+            Error::BadAddress => 14,
+  	}
     }
 }
 
@@ -64,6 +66,7 @@ impl fmt::Display for Error {
             Error::BadFileDescriptor => "bad file descriptor",
             Error::ReadOnly => "read-only filesystem",
             Error::Unsupported => "operation not supported",
-        })
+            Error::BadAddress => "bad address",
+	})
     }
 }

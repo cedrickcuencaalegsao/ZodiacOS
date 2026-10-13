@@ -53,3 +53,31 @@ pub fn shutdown() -> ! {
     }
     halt()
 }
+
+pub fn interrupts_enabled() -> bool{
+    let flags: u64;
+    unsafe { asm!("pushfq", "pop {}", out(reg) flags)};
+    flags & (1 << 9) != 0
+}
+
+pub fn disable_interrupts() {
+    unsafe { asm!("cli", options(nostack)) };
+} 
+
+pub fn enable_interrupts(){
+    unsafe { asm!("sti", options(nostack)) };
+}
+
+/// Disable interrupts and reports whether they were on before.
+pub fn save_and_disable_interrupts() -> bool {
+    let was_enabled = interrupts_enabled();
+    disable_interrupts();
+    was_enabled
+}
+
+pub fn restore_interrupts(was_enabled: bool) {
+    if was_enabled {
+	enable_interrupts();
+    }
+}
+

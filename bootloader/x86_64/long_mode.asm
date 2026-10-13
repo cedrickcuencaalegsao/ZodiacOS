@@ -1,7 +1,7 @@
 ; long_mode.asm - switch the CPU from 16-bit real mode to 64-bit long mode,
-; then jump to the kernel.
-; Included by boot.asm. Needs KERNEL_ADDR and STACK_TOP (boot.asm) and
-; gdt_ptr, CODE_SEL, DATA_SEL (gdt.asm).
+; copy the kernel to its final address, then jump to it.
+; Included by boot.asm. Needs LOAD_ADDR, KERNEL_ADDR, KERNEL_SECTORS, STACK_TOP
+; (boot.asm) and gdt_ptr, CODE_SEL, DATA_SEL (gdt.asm).
 
 PML4            equ 0x1000
 PDPT            equ 0x2000
@@ -16,10 +16,18 @@ enter_long_mode:
     mov  ecx, 3072              ; 12 KB / 4
     rep  stosd
 
-    ; ---- Identity-map the first 2 MB with one 2 MB page ----
     mov  dword [PML4], PDPT | 0x03      ; present | writable
     mov  dword [PDPT], PD   | 0x03
-    mov  dword [PD],   0x83             ; present | writable | 2 MB page
+
+    ; ---- Identity-map the first 1 GiB with 512 two-megabyte pages ----
+    mov  edi, PD
+    mov  eax, 0x83              ; present | writable | 2 MB page
+    mov  ecx, 512
+.fill_pd:
+    mov  [edi], eax             ; (the upper dword was zeroed above)
+    add  eax, 0x200000
+    add  edi, 8
+    loop .fill_pd
 
     ; ---- Load the GDT and enable long mode ----
     lgdt [gdt_ptr]
@@ -51,6 +59,13 @@ long_mode_entry:
     xor  ax, ax
     mov  fs, ax
     mov  gs, ax
+
+    ; ---- Copy the kernel from the low load area to its home at 1 MiB ----
+    cld
+    mov  esi, LOAD_ADDR
+    mov  edi, KERNEL_ADDR
+    mov  ecx, KERNEL_SECTORS * 512 / 8
+    rep  movsq
 
     mov  esp, STACK_TOP
     mov  eax, KERNEL_ADDR

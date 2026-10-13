@@ -66,8 +66,8 @@ DISK_IMG   := $(BUILD_DIR)/zodiacos.img
 DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.img
 
-# Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (640 sectors * 512 bytes)
-MAX_KERNEL_BYTES := 327680
+# Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (768 sectors * 512 bytes)
+MAX_KERNEL_BYTES := 393216
 
 # COM1 output (slog!/log_info! in the kernel) goes to this terminal.
 # To keep the terminal quiet and read logs later, use instead:

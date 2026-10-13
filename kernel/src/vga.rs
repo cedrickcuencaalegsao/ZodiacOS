@@ -172,9 +172,11 @@ pub struct Writer;
 
 impl fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        let was_enabled = crate::arch::save_and_disable_interrupts();
         for b in s.bytes() {
             put_byte(b);
         }
+        crate::arch::restore_interrupts(was_enabled);
         Ok(())
     }
 }

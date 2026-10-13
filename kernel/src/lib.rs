@@ -29,6 +29,10 @@ mod memory;
 mod panic;
 #[cfg(target_arch = "x86_64")]
 mod vga;
+#[cfg(target_arch = "x86_64")]
+mod process;
+#[cfg(target_arch = "x86_64")]
+mod scheduler;
 
 // ---- Transition aliases: old module paths keep working while files migrate ----
 #[cfg(target_arch = "x86_64")]
@@ -53,6 +57,9 @@ pub fn kernel_main() -> ! {
     memory::init();
     drivers::init();
     interrupts::init();
+    scheduler::init(); // the boot thread becomes task 0, the timer drives the scheduler
+    process::init();   // idle task and the system call gate
+    
     interrupts::enable();
     log_info!("ZodiacOS kernel started");
 

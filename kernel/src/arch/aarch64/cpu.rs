@@ -55,3 +55,29 @@ pub fn shutdown() -> ! {
 pub fn reboot() -> ! {
     psci(0x8400_0009) // PSCI SYSTEM_RESET
 }
+
+pub fn interrupts_enabled() -> bool {
+    let daif: u64;
+    unsafe { asm!("mrs {}, daif", out(reg), options(nomem, nostack)) };
+    diaf & (1 << 7) == 0
+}
+
+pub fn disabled_interrupts() {
+    unsafe { asm!("msr daifset, #2", options(nomem, nostack)) };
+}
+
+pub fn enable_interrupts() {
+    unsafe { asm!("msr daifset, #2", options(nomem, nostack)) };
+}
+
+pub fn save_and_disable_interrupts() -> bool {
+    let was_enabled = interrupts_enabled();
+    disabled_interrupts();
+    was_enabled
+}
+
+pub fn restore_interrupts(was_enabled: bool) {
+    if was_enabled {
+	enable_interrupts();
+    }
+} 

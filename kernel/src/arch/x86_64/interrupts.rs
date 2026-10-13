@@ -25,12 +25,12 @@ impl Entry {
         zero: 0,
     };
 
-    fn new(handler: u64) -> Entry {
+    fn new(handler: u64, ist: u8, attr: u8) -> Entry {
         Entry {
             offset_low: handler as u16,
-            selector: 0x08, // the 64-bit code segment from the bootloader's GDT
-            ist: 0,
-            attr: 0x8E, // present, interrupt gate (interrupts disabled on entry)
+            selector: 0x08, // kernel code segment
+            ist: ist & 7,
+            attr,
             offset_mid: (handler >> 16) as u16,
             offset_high: (handler >> 32) as u32,
             zero: 0,
@@ -56,12 +56,26 @@ struct IdtPtr {
 
 static mut IDT: [Entry; 256] = [Entry::MISSING; 256];
 
-/// Installs a handler for an interrupt vector (used by `interrupts.rs` for IRQs).
-pub fn set_gate(vector: u8, handler: u64) {
+fn install(vector: u8, handler: u64, ist: u8, attr: u8) {
     unsafe {
         let idt = &raw mut IDT;
-        (*idt)[vector as usize] = Entry::new(handler);
+        (*idt)[vector as usize] = Entry::new(handler, ist, attr);
     }
+}
+
+/// Interrupt gate usable only from ring 0.
+pub fn set_gate(vector: u8, handler: u64) {
+    install(vector, handler, 0, 0x8E);
+}
+
+/// Same, but the CPU switches to IST stack `ist` (1-7) before calling the handler.
+pub fn set_gate_ist(vector: u8, handler: u64, ist: u8) {
+    install(vector, handler, ist, 0x8E);
+}
+
+/// Gate that user mode may invoke with `int` (system calls).
+pub fn set_gate_user(vector: u8, handler: u64) {
+    install(vector, handler, 0, 0xEE);
 }
 
 fn describe_page_fault(code: u64) {
@@ -83,6 +97,11 @@ fn describe_page_fault(code: u64) {
 }
 
 fn fatal(title: &str, f: &Frame, code: Option<u64>, cr2: Option<u64>) -> ! {
+    // A fault in user mode kills that process, not the kernel
+    if f.cs & 3 == 3 {
+        crate::process::user_fault(title, f.rip, code, cr2);
+    }
+
     unsafe { asm!("cli") };
 
     slogln!(
@@ -129,7 +148,29 @@ exception_with_code!(segment_not_present, "SEGMENT NOT PRESENT (#NP)");
 exception_with_code!(stack_segment, "STACK SEGMENT FAULT (#SS)");
 exception_with_code!(general_protection, "GENERAL PROTECTION FAULT (#GP)");
 
+/// Runs on its own IST stack, so it still works when the kernel stack is gone.
 extern "x86-interrupt" fn double_fault(f: Frame, code: u64) -> ! {
+    unsafe { asm!("cli") };
+    let cr2: u64;
+    unsafe { asm!("mov {}, cr2", out(reg) cr2) };
+
+    if let Some(slot) = crate::process::stack_guard_slot(cr2) {
+        slogln!("[EXCEPTION] kernel stack overflow in task slot {} (cr2={:#x})", slot, cr2);
+        panic::begin_screen("STACK OVERFLOW");
+        kprintln!("A kernel stack ran into its guard page.");
+        match crate::scheduler::name_of(slot) {
+            Some(name) => kprintln!(
+                "task    {} (slot {})",
+                crate::process::task::name_str(&name),
+                slot
+            ),
+            None => kprintln!("task    slot {}", slot),
+        }
+        kprintln!("rip     {:#018x}", f.rip);
+        kprintln!("rsp     {:#018x}", f.rsp);
+        panic::finish()
+    }
+
     fatal("DOUBLE FAULT (#DF)", &f, Some(code), None)
 }
 
@@ -151,7 +192,7 @@ pub fn init() {
     set_gate(3, breakpoint as *const () as u64);
     set_gate(6, invalid_opcode as *const () as u64);
     set_gate(7, device_not_available as *const () as u64);
-    set_gate(8, double_fault as *const () as u64);
+    set_gate_ist(8, double_fault as *const () as u64, 1);
     set_gate(10, invalid_tss as *const () as u64);
     set_gate(11, segment_not_present as *const () as u64);
     set_gate(12, stack_segment as *const () as u64);

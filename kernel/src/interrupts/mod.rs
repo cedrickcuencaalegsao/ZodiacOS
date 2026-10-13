@@ -12,16 +12,13 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 
 static TICK_HOOK: AtomicUsize = AtomicUsize::new(0);
 
-/// Registers a function that runs on every timer tick (100 times a second, with
-/// interrupts off). The scheduler will use this to switch tasks.
-#[allow(dead_code)]
 pub fn set_tick_hook(hook: fn(u64)) {
     TICK_HOOK.store(hook as usize, Relaxed);
 }
 
 extern "x86-interrupt" fn timer_irq(_f: Frame) {
     let tick = TICKS.fetch_add(1, Relaxed) + 1;
-    eoi(0); // acknowledge first, so a task switch inside the hook can't block the PIC
+    eoi(0);
     let hook = TICK_HOOK.load(Relaxed);
     if hook != 0 {
         let hook: fn(u64) = unsafe { core::mem::transmute(hook) };

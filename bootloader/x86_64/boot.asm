@@ -1,6 +1,6 @@
 ; ZodiacOS x86_64 bootloader: one 512-byte sector.
 ; Real mode: read the BIOS memory map, load the kernel, enable A20,
-; then long_mode.asm switches to 64-bit and jumps to the kernel.
+; then long_mode.asm switches to 64-bit, copies the kernel to 1 MiB and jumps to it.
 ;
 ; Files:    boot.asm (this one), gdt.asm, long_mode.asm
 ; Assemble: nasm -f bin -I bootloader/x86_64/ -o build/boot.bin bootloader/x86_64/boot.asm
@@ -8,10 +8,11 @@
 [bits 16]
 [org 0x7C00]
 
-KERNEL_ADDR     equ 0x10000     ; physical load address (kernel/linker.ld must match)
-KERNEL_SEG      equ 0x1000      ; KERNEL_ADDR >> 4
+LOAD_ADDR       equ 0x10000     ; the BIOS can only read below 1 MiB, so the image is loaded here...
+LOAD_SEG        equ 0x1000      ; LOAD_ADDR >> 4
+KERNEL_ADDR     equ 0x100000    ; ...and copied here (the link address in kernel/linker.ld)
 CHUNK           equ 32          ; sectors per BIOS read (16 KB)
-KERNEL_SECTORS  equ 640         ; 320 KB total, a multiple of CHUNK (Makefile: MAX_KERNEL_BYTES)
+KERNEL_SECTORS  equ 768         ; 384 KB image, a multiple of CHUNK (Makefile: MAX_KERNEL_BYTES)
 STACK_TOP       equ 0x90000
 
 MEMMAP_ADDR     equ 0x4000      ; BIOS memory map: u32 count, 24-byte entries from +16
@@ -67,7 +68,7 @@ start:
     dec  byte  [chunks_left]
     jnz  .load
 
-    ; ---- Enable A20 (fast method) ----
+    ; ---- Enable A20 (fast method), needed to touch memory above 1 MiB ----
     cli
     in   al, 0x92
     or   al, 2
@@ -92,7 +93,7 @@ dap:                            ; Disk Address Packet (updated after each chunk)
     dw CHUNK                    ; sectors per read
     dw 0x0000                   ; destination offset
 dap_seg:
-    dw KERNEL_SEG               ; destination segment
+    dw LOAD_SEG                 ; destination segment
 dap_lba:
     dq 1                        ; start at LBA 1
 
