@@ -50,6 +50,13 @@ pub(crate) use {
     security::permissions as user,
 };
 
+/// The desktop, built from userspace/desktop for the ZodiacOS user target and embedded
+/// in the kernel image for now. Adjust the path to where your build puts the binary.
+/// Later: replace with a read of /bin/desktop from ZDFS.
+#[cfg(target_arch = "x86_64")]
+static DESKTOP_ELF: &[u8] =
+    include_bytes!("../../target/x86_64-zodiac-user/release/desktop");
+
 /// Architecture-neutral boot sequence (x86_64 for now; AArch64 has its own
 /// `rust_entry` in arch/aarch64/mod.rs until the shared pieces are ported).
 #[cfg(target_arch = "x86_64")]
@@ -59,7 +66,7 @@ pub fn kernel_main() -> ! {
     interrupts::init();
     scheduler::init(); // the boot thread becomes task 0, the timer drives the scheduler
     process::init();   // idle task and the system call gate
-    
+
     interrupts::enable();
     log_info!("ZodiacOS kernel started");
 
@@ -77,10 +84,28 @@ pub fn kernel_main() -> ! {
     // ADAPT: record the current user so permissions/terminal can use it
     // user::set_current(session.uid, session.gid);
 
+    log_info!("starting login");
+    loop {
+        let session = console::login::run();
+        log_info!("user '{}' logged in (uid {})", session.name, session.uid);
+        // user::set_current(session.uid, session.gid);
+ 
+        log_info!("starting desktop");
+        match console::desktop_host::run() {
+            Ok(()) => {
+                log_info!("user logged out");
+                vga::clear();
+                continue; // back to the login screen
+            }
+            Err(e) => {
+                log_error!("desktop unavailable: {}", e);
+                break; // fall through to the terminal
+            }
+        }
+    }
+ 
     vga::clear();
     kprintln!("ZodiacOS 0.1.0");
     kprintln!("Type 'help' for a list of commands.\n");
-
-    log_info!("starting shell");
     console::terminal::run();
 }

@@ -15,9 +15,16 @@ use task::{name_str, Entry, State, Task};
 const STACK_PAGES: u64 = 8;
 const SLOT_BYTES: u64 = (STACK_PAGES + 1) * 4096;
 
-// User programs live in the user part of an address space
+// User programs live in the user part of an address space.
+// The code region is now 256 MiB wide so a real ELF (desktop) fits below the stack.
 const USER_CODE: u64 = paging::USER_BASE;
-const USER_STACK: u64 = paging::USER_BASE + 0x10_0000;
+const USER_STACK: u64 = paging::USER_BASE + 0x1000_0000;
+const USER_STACK_PAGES: u64 = 16; // 64 KiB user stack for ELF programs
+
+// ELF constants
+const PT_LOAD: u32 = 1;
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
 
 /// Page-table edits for stacks are serialized with a (blocking) Mutex.
 static STACK_LOCK: Mutex<()> = Mutex::new(());
@@ -159,8 +166,9 @@ fn map_user_page(space: u64, virt: u64, flags: u64) -> Result<u64, Error> {
     Ok(frame)
 }
 
-/// Starts a user process: a new address space with `program` mapped read-only and
-/// executable at the start of user space, plus one stack page. Returns its pid.
+/// Starts a user process from a flat binary: a new address space with `program` mapped
+/// read-only and executable at the start of user space, plus one stack page.
+/// Kept for the tiny built-in programs in `programs.rs`. Returns its pid.
 pub fn spawn_user(name: &str, program: &[u8]) -> Result<u32, Error> {
     kassert!(
         !program.is_empty() && program.len() <= 4096,
@@ -189,6 +197,121 @@ pub fn spawn_user(name: &str, program: &[u8]) -> Result<u32, Error> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ELF loading
+// ---------------------------------------------------------------------------
+
+fn rd16(b: &[u8], o: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(b.get(o..o.checked_add(2)?)?.try_into().ok()?))
+}
+fn rd32(b: &[u8], o: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(b.get(o..o.checked_add(4)?)?.try_into().ok()?))
+}
+fn rd64(b: &[u8], o: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(b.get(o..o.checked_add(8)?)?.try_into().ok()?))
+}
+
+/// Maps every PT_LOAD segment of `image` into `space`, plus the user stack.
+/// Returns the entry point.
+///
+/// Requirements on the program: statically linked, non-PIE ELF64 for x86_64, linked at or
+/// above `paging::USER_BASE`, with every segment starting on its own 4 KiB page
+/// (use `ALIGN(4096)` between sections in the linker script).
+fn load_elf(space: u64, image: &[u8]) -> Result<u64, Error> {
+    let bad = || Error::InvalidExecutable; // add this variant to base::error::Error
+
+    // magic, ELFCLASS64, little-endian, machine = x86_64
+    if image.get(0..4) != Some(&[0x7F, b'E', b'L', b'F'][..])
+        || image.get(4) != Some(&2)
+        || image.get(5) != Some(&1)
+        || rd16(image, 18) != Some(0x3E)
+    {
+        return Err(bad());
+    }
+    let entry = rd64(image, 24).ok_or_else(bad)?;
+    let phoff = rd64(image, 32).ok_or_else(bad)? as usize;
+    let phentsize = rd16(image, 54).ok_or_else(bad)? as usize;
+    let phnum = rd16(image, 56).ok_or_else(bad)? as usize;
+
+    let stack_bottom = USER_STACK + 4096 - USER_STACK_PAGES * 4096;
+
+    for i in 0..phnum {
+        let ph = phoff.checked_add(i.checked_mul(phentsize).ok_or_else(bad)?).ok_or_else(bad)?;
+        if rd32(image, ph) != Some(PT_LOAD) {
+            continue;
+        }
+        let flags = rd32(image, ph + 4).ok_or_else(bad)?;
+        let offset = rd64(image, ph + 8).ok_or_else(bad)? as usize;
+        let vaddr = rd64(image, ph + 16).ok_or_else(bad)?;
+        let filesz = rd64(image, ph + 32).ok_or_else(bad)? as usize;
+        let memsz = rd64(image, ph + 40).ok_or_else(bad)?;
+
+        // never let a program map kernel memory or collide with its own stack
+        let end = vaddr.checked_add(memsz).ok_or_else(bad)?;
+        if vaddr < USER_CODE || end > stack_bottom || filesz as u64 > memsz {
+            return Err(bad());
+        }
+        let data = image
+            .get(offset..offset.checked_add(filesz).ok_or_else(bad)?)
+            .ok_or_else(bad)?;
+
+        let mut pflags = paging::USER;
+        if flags & PF_W != 0 {
+            pflags |= paging::WRITABLE;
+        }
+        if flags & PF_X == 0 {
+            pflags |= paging::NX;
+        }
+
+        let mut page = vaddr & !0xFFF;
+        while page < end {
+            let frame = map_user_page(space, page, pflags)?; // zeroed, so .bss comes for free
+            // copy the part of the file data that lands in this page
+            let lo = core::cmp::max(page, vaddr);
+            let hi = core::cmp::min(page + 4096, vaddr + filesz as u64);
+            if lo < hi {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        data.as_ptr().add((lo - vaddr) as usize),
+                        (frame + (lo - page)) as *mut u8,
+                        (hi - lo) as usize,
+                    );
+                }
+            }
+            page += 4096;
+        }
+    }
+
+    for p in 0..USER_STACK_PAGES {
+        map_user_page(space, stack_bottom + p * 4096, paging::USER | paging::WRITABLE | paging::NX)?;
+    }
+    Ok(entry)
+}
+
+/// Starts a user process from an ELF image (e.g. the desktop). Returns its pid.
+pub fn spawn_elf(name: &str, image: &[u8]) -> Result<u32, Error> {
+    let space = paging::new_address_space().ok_or(Error::OutOfMemory)?;
+    let rip = match load_elf(space, image) {
+        Ok(rip) => rip,
+        Err(e) => {
+            paging::destroy_address_space(space);
+            return Err(e);
+        }
+    };
+    let entry = Entry::User { rip, rsp: USER_STACK + 4096 };
+    match create(name, entry, space, true) {
+        Ok((_, pid)) => Ok(pid),
+        Err(e) => {
+            paging::destroy_address_space(space);
+            Err(e)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task lifecycle
+// ---------------------------------------------------------------------------
 
 /// Ends the running task. Its slot stays a zombie until joined or reaped.
 pub fn exit_current(code: i32) -> ! {
