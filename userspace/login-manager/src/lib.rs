@@ -5,7 +5,9 @@ use alloc::vec::Vec;
 
 pub mod authentication;
 pub mod greeter;
+pub mod login_gui;
 pub mod session;
+pub mod typeface;
 pub mod user_accounts;
 
 // UI.
@@ -60,7 +62,8 @@ pub trait Platform {
     fn list_users(&self) -> Vec<UserInfo>;
     fn authenticate(&mut self, name: &str, password: &str) -> Result<Session, AuthError>;
     fn create_root(&mut self, password: &str) -> Result<(), AuthError>;
-    
+
+    /// Pixel drawing, if the kernel has a framebuffer. `None` = text mode only.
     fn gfx(&mut self) -> Option<&mut dyn Gfx> {
         None
     }
@@ -68,13 +71,22 @@ pub trait Platform {
 
 /// Entry point the kernel calls instead of starting the terminal.
 pub fn run<P: Platform>(p: &mut P) -> Session {
-    greeter::show(p);
-    let session = authentication::run(p);
-    greeter::welcome_user(p, &session);
-    session
+    if p.gfx().is_some() {
+        // modern pixel UI
+        let session = login_gui::run_gui(p);
+        p.clear(Color::Black); // pixel drawing bypassed the text grid
+        greeter::welcome_user(p, &session);
+        session
+    } else {
+        // text-mode fallback
+        greeter::show(p);
+        let session = authentication::run(p);
+        greeter::welcome_user(p, &session);
+        session
+    }
 }
 
-// ---------- tiny drawing helpers shared by the screens ----------
+// ---------- tiny drawing helpers shared by the text screens ----------
 
 pub fn text<P: Platform>(p: &mut P, x: usize, y: usize, s: &str, fg: Color, bg: Color) {
     for (i, c) in s.chars().enumerate() {
@@ -130,10 +142,15 @@ pub fn border<P: Platform>(
     }
 }
 
+/// Pixel drawing the kernel provides (colors are 0xRRGGBB).
 pub trait Gfx {
     fn size_px(&self) -> (usize, usize);
+    fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, rgb: u32);
     fn gradient(&mut self, x: usize, y: usize, w: usize, h: usize, top: u32, bottom: u32);
     fn round_rect(&mut self, x: usize, y: usize, w: usize, h: usize, r: usize, rgb: u32, alpha: u8);
+    fn circle(&mut self, cx: usize, cy: usize, r: usize, rgb: u32, alpha: u8);
     fn text(&mut self, x: usize, y: usize, s: &str, scale: usize, rgb: u32);
     fn text_width(&self, s: &str, scale: usize) -> usize;
+    /// Blend a w*h 8-bit coverage mask (row-major) tinted with `rgb` at (x, y).
+    fn blit_mask(&mut self, x: usize, y: usize, w: usize, h: usize, mask: &[u8], rgb: u32);
 }

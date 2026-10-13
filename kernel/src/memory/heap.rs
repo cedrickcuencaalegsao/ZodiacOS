@@ -5,7 +5,7 @@ use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
 
 pub const HEAP_START: u64 = paging::HEAP_START;
-pub const HEAP_SIZE: usize = 2 * 1024 * 1024;
+pub const HEAP_SIZE: usize = 32 * 1024 * 1024;
 
 const MIN_BLOCK: usize = 16; // big enough for a free-list node, keeps everything 16-byte aligned
 

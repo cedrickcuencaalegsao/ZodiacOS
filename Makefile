@@ -67,14 +67,27 @@ DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.img
 
 # Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (768 sectors * 512 bytes)
-MAX_KERNEL_BYTES := 393216
+MAX_KERNEL_BYTES := 524288
+
+# ---- Host screen size ---------------------------------------------------------
+# Asks macOS for the main screen size (in points). The size is handed to QEMU's
+# VGA card as its preferred mode (EDID); the kernel reads it back at boot.
+# Override by hand with:  make run SCREEN_SIZE=1920x1080
+# Falls back to 1920x1080 if the query fails.
+SCREEN_SIZE ?= $(shell osascript -l JavaScript -e 'ObjC.import("AppKit"); var s=$$.NSScreen.mainScreen.frame.size; Math.round(s.width)+"x"+Math.round(s.height)' 2>/dev/null)
+ifeq ($(SCREEN_SIZE),)
+  SCREEN_SIZE := 1920x1080
+endif
+SCREEN_W := $(word 1,$(subst x, ,$(SCREEN_SIZE)))
+SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
 
 # COM1 output (slog!/log_info! in the kernel) goes to this terminal.
 # To keep the terminal quiet and read logs later, use instead:
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m 256M \
-	-vga std \
+	-vga none \
+	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
 	-display cocoa,zoom-to-fit=on \
 	-rtc base=localtime \
 	-serial stdio \
@@ -85,7 +98,7 @@ QEMU_DRIVES := \
 all: $(DISK_IMG) $(DATA_IMG)
 	@echo ""
 	@echo "  Build complete! Disk image: $(DISK_IMG)"
-	@echo "  Run with:  make run"
+	@echo "  Run with:  make run     (screen: $(SCREEN_W)x$(SCREEN_H))"
 	@echo ""
 
 $(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) | dirs
@@ -138,6 +151,7 @@ _iso: $(DISK_IMG)
 	@echo ""
 
 run: $(DISK_IMG) $(DATA_IMG)
+	@echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display"
 	$(QEMU) $(QEMU_DRIVES)
 
 # Stops at the first fault and logs CPU resets/interrupts instead of rebooting

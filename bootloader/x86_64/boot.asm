@@ -12,7 +12,7 @@ LOAD_ADDR       equ 0x10000     ; the BIOS can only read below 1 MiB, so the ima
 LOAD_SEG        equ 0x1000      ; LOAD_ADDR >> 4
 KERNEL_ADDR     equ 0x100000    ; ...and copied here (the link address in kernel/linker.ld)
 CHUNK           equ 32          ; sectors per BIOS read (16 KB)
-KERNEL_SECTORS  equ 768         ; 384 KB image, a multiple of CHUNK (Makefile: MAX_KERNEL_BYTES)
+KERNEL_SECTORS  equ 1024        ; 384 KB image, a multiple of CHUNK (Makefile: MAX_KERNEL_BYTES)
 STACK_TOP       equ 0x90000
 
 MEMMAP_ADDR     equ 0x4000      ; BIOS memory map: u32 count, 24-byte entries from +16

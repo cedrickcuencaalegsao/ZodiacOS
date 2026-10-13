@@ -10,6 +10,20 @@ pub struct Framebuffer {
     pub pitch: usize, // bytes per row
 }
 
+/// Integer square root (floor), no floats needed.
+fn isqrt(n: i32) -> i32 {
+    if n <= 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
 impl Framebuffer {
     fn row_ptr(&self, y: usize) -> *mut u32 {
         (self.base + y * self.pitch) as *mut u32
@@ -130,7 +144,11 @@ impl Framebuffer {
             self.span(x + r, py, w - 2 * r, color, a);
 
             // circle centre (pixel coords) for this row's corner
-            let cy = if row < r { (y + r) as i32 } else { (y + h - r) as i32 };
+            let cy = if row < r {
+                (y + r) as i32
+            } else {
+                (y + h - r) as i32
+            };
             let rad = r as i32 * 8;
             for i in 0..r {
                 for &(px, cx) in &[(x + i, (x + r) as i32), (x + w - 1 - i, (x + w - r) as i32)] {
@@ -152,8 +170,86 @@ impl Framebuffer {
         }
     }
 
+    /// Anti-aliased filled circle with alpha (edge pixels use 4x4 supersampling).
+    pub fn fill_circle(&self, cx: usize, cy: usize, r: usize, color: u32, alpha: u8) {
+        let (cx, cy, r) = (cx as i32, cy as i32, r as i32);
+        let a = alpha as u32;
+        for y in (cy - r - 1)..=(cy + r + 1) {
+            if y < 0 || y as usize >= self.height {
+                continue;
+            }
+            let dy = y - cy;
+            let outer_sq = (r + 1) * (r + 1) - dy * dy;
+            if outer_sq < 0 {
+                continue;
+            }
+            let outer = isqrt(outer_sq);
+            let inner_sq = (r - 1) * (r - 1) - dy * dy;
+            let inner = if inner_sq >= 0 { isqrt(inner_sq) } else { -1 };
+
+            // fully covered middle part: one fast span
+            let (left_end, right_start) = if inner >= 0 {
+                let x0 = (cx - inner).max(0);
+                let x1 = cx + inner;
+                if x1 >= 0 {
+                    self.span(x0 as usize, y as usize, (x1 - x0 + 1) as usize, color, a);
+                }
+                (cx - inner - 1, cx + inner + 1)
+            } else {
+                (cx + outer, cx + outer + 1) // whole row is edge
+            };
+
+            let edge = |x: i32| {
+                if x < 0 {
+                    return;
+                }
+                let mut hits = 0u32;
+                for sy in 0..4i32 {
+                    for sx in 0..4i32 {
+                        let ux = x * 8 + 2 * sx + 1 - (cx * 8 + 4);
+                        let uy = y * 8 + 2 * sy + 1 - (cy * 8 + 4);
+                        if ux * ux + uy * uy <= (r * 8) * (r * 8) {
+                            hits += 1;
+                        }
+                    }
+                }
+                if hits > 0 {
+                    self.put_px(x as usize, y as usize, color, a * hits / 16);
+                }
+            };
+            for x in (cx - outer)..=left_end {
+                edge(x);
+            }
+            for x in right_start..=(cx + outer) {
+                edge(x);
+            }
+        }
+    }
+
+    /// Alpha-blends an 8-bit coverage mask (anti-aliased glyphs) tinted with `color`.
+    pub fn blit_mask(&self, x: usize, y: usize, w: usize, h: usize, mask: &[u8], color: u32) {
+        if mask.len() < w * h {
+            return;
+        }
+        for row in 0..h {
+            for col in 0..w {
+                let a = mask[row * w + col] as u32;
+                if a != 0 {
+                    self.put_px(x + col, y + row, color, a);
+                }
+            }
+        }
+    }
+
     /// 8x16 glyph scaled by an integer factor, transparent background.
-    pub fn draw_glyph_scaled(&self, x: usize, y: usize, glyph: &[u8; 16], scale: usize, color: u32) {
+    pub fn draw_glyph_scaled(
+        &self,
+        x: usize,
+        y: usize,
+        glyph: &[u8; 16],
+        scale: usize,
+        color: u32,
+    ) {
         for (row, bits) in glyph.iter().enumerate() {
             for col in 0..8 {
                 if bits & (0x80 >> col) != 0 {
@@ -178,18 +274,28 @@ pub fn glyph(ch: u8) -> &'static [u8; 16] {
 fn capture_vga_font() -> Result<(), &'static str> {
     unsafe {
         // save the registers we change
-        outb(0x3C4, 0x02); let seq2 = inb(0x3C5);
-        outb(0x3C4, 0x04); let seq4 = inb(0x3C5);
-        outb(0x3CE, 0x04); let gc4 = inb(0x3CF);
-        outb(0x3CE, 0x05); let gc5 = inb(0x3CF);
-        outb(0x3CE, 0x06); let gc6 = inb(0x3CF);
+        outb(0x3C4, 0x02);
+        let seq2 = inb(0x3C5);
+        outb(0x3C4, 0x04);
+        let seq4 = inb(0x3C5);
+        outb(0x3CE, 0x04);
+        let gc4 = inb(0x3CF);
+        outb(0x3CE, 0x05);
+        let gc5 = inb(0x3CF);
+        outb(0x3CE, 0x06);
+        let gc6 = inb(0x3CF);
 
         // expose plane 2 at 0xA0000 for reading
-        outb(0x3C4, 0x02); outb(0x3C5, 0x04);
-        outb(0x3C4, 0x04); outb(0x3C5, 0x07);
-        outb(0x3CE, 0x04); outb(0x3CF, 0x02);
-        outb(0x3CE, 0x05); outb(0x3CF, 0x00);
-        outb(0x3CE, 0x06); outb(0x3CF, 0x00);
+        outb(0x3C4, 0x02);
+        outb(0x3C5, 0x04);
+        outb(0x3C4, 0x04);
+        outb(0x3C5, 0x07);
+        outb(0x3CE, 0x04);
+        outb(0x3CF, 0x02);
+        outb(0x3CE, 0x05);
+        outb(0x3CF, 0x00);
+        outb(0x3CE, 0x06);
+        outb(0x3CF, 0x00);
 
         let src = 0xA0000 as *const u8;
         let table = &mut *FONT.0.get();
@@ -200,11 +306,16 @@ fn capture_vga_font() -> Result<(), &'static str> {
         }
 
         // put text mode back exactly as it was
-        outb(0x3C4, 0x02); outb(0x3C5, seq2);
-        outb(0x3C4, 0x04); outb(0x3C5, seq4);
-        outb(0x3CE, 0x04); outb(0x3CF, gc4);
-        outb(0x3CE, 0x05); outb(0x3CF, gc5);
-        outb(0x3CE, 0x06); outb(0x3CF, gc6);
+        outb(0x3C4, 0x02);
+        outb(0x3C5, seq2);
+        outb(0x3C4, 0x04);
+        outb(0x3C5, seq4);
+        outb(0x3CE, 0x04);
+        outb(0x3CF, gc4);
+        outb(0x3CE, 0x05);
+        outb(0x3CF, gc5);
+        outb(0x3CE, 0x06);
+        outb(0x3CF, gc6);
 
         if table[b'A' as usize].iter().all(|&b| b == 0) {
             return Err("could not read the font from VGA memory");

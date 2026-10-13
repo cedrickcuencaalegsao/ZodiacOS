@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use login_manager::session::{AuthError, Session};
 use login_manager::user_accounts::UserInfo;
-use login_manager::{Color, Key, Platform};
+use login_manager::{Color, Gfx, Key, Platform};
 
 use crate::console::fbcon;
 use crate::keyboard;
@@ -19,8 +19,8 @@ const VGA_BUFFER: usize = 0xB8000;
 
 /// Same colors as fbcon's PALETTE, indexed by `Color as u8`.
 const PALETTE: [u32; 16] = [
-    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
-    0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
+    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA, 0x555555,
+    0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 ];
 
 struct KernelPlatform {
@@ -116,6 +116,54 @@ impl Platform for KernelPlatform {
     fn create_root(&mut self, password: &str) -> Result<(), AuthError> {
         self.auth.create_root(password, Self::random_salt())
     }
+
+    fn gfx(&mut self) -> Option<&mut dyn Gfx> {
+        if fbcon::active() { Some(self) } else { None }
+    }
+}
+
+// ---- pixel drawing for the modern login screen: forwards to fbcon ---------------
+impl Gfx for KernelPlatform {
+    fn size_px(&self) -> (usize, usize) {
+        fbcon::pixel_size()
+    }
+
+    fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, rgb: u32) {
+        fbcon::fill_px(x, y, w, h, rgb)
+    }
+
+    fn gradient(&mut self, x: usize, y: usize, w: usize, h: usize, top: u32, bottom: u32) {
+        fbcon::gradient(x, y, w, h, top, bottom)
+    }
+
+    fn round_rect(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        r: usize,
+        rgb: u32,
+        alpha: u8,
+    ) {
+        fbcon::round_rect(x, y, w, h, r, rgb, alpha)
+    }
+
+    fn circle(&mut self, cx: usize, cy: usize, r: usize, rgb: u32, alpha: u8) {
+        fbcon::circle(cx, cy, r, rgb, alpha)
+    }
+
+    fn text(&mut self, x: usize, y: usize, s: &str, scale: usize, rgb: u32) {
+        fbcon::text(x, y, s, scale, rgb)
+    }
+
+    fn text_width(&self, s: &str, scale: usize) -> usize {
+        fbcon::text_width(s, scale)
+    }
+
+    fn blit_mask(&mut self, x: usize, y: usize, w: usize, h: usize, mask: &[u8], rgb: u32) {
+        fbcon::blit_mask(x, y, w, h, mask, rgb)
+    }
 }
 
 /// TODO: wire to your zdfs read function; return the file bytes or None.
@@ -142,7 +190,11 @@ pub fn run() -> Session {
     let session = login_manager::run(&mut platform);
 
     if platform.auth.dirty() {
-        let _ = crate::fs::write(PASSWD_PATH, PASSWD_MODE, platform.auth.serialize().as_bytes());
+        let _ = crate::fs::write(
+            PASSWD_PATH,
+            PASSWD_MODE,
+            platform.auth.serialize().as_bytes(),
+        );
     }
     session
 }

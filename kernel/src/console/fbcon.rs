@@ -211,6 +211,11 @@ pub fn round_rect(x: usize, y: usize, w: usize, h: usize, r: usize, rgb: u32, al
     with(|c| c.fb.fill_round_rect(x, y, w, h, r, rgb, alpha));
 }
 
+/// Anti-aliased filled circle with alpha 0..=255.
+pub fn circle(cx: usize, cy: usize, r: usize, rgb: u32, alpha: u8) {
+    with(|c| c.fb.fill_circle(cx, cy, r, rgb, alpha));
+}
+
 /// Width in pixels of `s` drawn with `text()` at the given integer scale.
 pub fn text_width(s: &str, scale: usize) -> usize {
     s.len() * CELL_W * scale
@@ -223,6 +228,11 @@ pub fn text(x: usize, y: usize, s: &str, scale: usize, rgb: u32) {
             c.fb.draw_glyph_scaled(x + i * CELL_W * scale, y, framebuffer::glyph(b), scale, rgb);
         }
     });
+}
+
+/// Blend an 8-bit coverage mask (glyph) tinted with `rgb`.
+pub fn blit_mask(x: usize, y: usize, w: usize, h: usize, mask: &[u8], rgb: u32) {
+    with(|c| c.fb.blit_mask(x, y, w, h, mask, rgb));
 }
 
 // ---- Text grid -------------------------------------------------------------------
