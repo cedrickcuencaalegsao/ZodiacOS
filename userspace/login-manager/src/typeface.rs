@@ -11,10 +11,10 @@ use fontdue::{Font, FontSettings};
 
 // Paths are relative to THIS file (userspace/login-manager/src/typeface.rs).
 // Use the STATIC fonts, not the VariableFont ones (fontdue can't pick variable instances).
-static REGULAR: &[u8] = include_bytes!("../../assets/fonts/Roboto/static/Roboto-Regular.ttf");
+static REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Roboto/static/Roboto-Regular.ttf");
 // One embedded font keeps the kernel under the bootloader's 512 KB limit.
 // To get real bold back later (costs ~150 KB), use instead:
-//   static BOLD: &[u8] = include_bytes!("../../assets/fonts/Roboto/static/Roboto-Bold.ttf");
+//   static BOLD: &[u8] = include_bytes!("../../../assets/fonts/Roboto/static/Roboto-Bold.ttf");
 static BOLD: &[u8] = REGULAR;
 
 struct Glyph {
