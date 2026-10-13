@@ -8,6 +8,9 @@ pub mod greeter;
 pub mod session;
 pub mod user_accounts;
 
+// UI.
+pub mod components;
+
 use session::{AuthError, Session};
 use user_accounts::UserInfo;
 

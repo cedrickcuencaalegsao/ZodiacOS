@@ -1,120 +1,260 @@
+use crate::components::Input;
 use crate::session::Session;
 use crate::user_accounts::UserInfo;
-use crate::{border, centered, fill, text, Color, Key, Platform};
+use crate::{centered, fill, text, Color, Key, Platform};
 use alloc::{format, string::String, vec::Vec};
 
-const W: usize = 64;
-const H: usize = 17;
-const LIST_ROWS: usize = 9;
+const PILL_W: usize = 28;
+const AV_W: usize = 11;
+const AV_H: usize = 5;
 const MAX_ATTEMPTS: u32 = 3;
 
-fn panel<P: Platform>(p: &mut P) -> (usize, usize) {
-    let (sw, sh) = p.size();
-    let (ox, oy) = (sw.saturating_sub(W) / 2, sh.saturating_sub(H) / 2);
-    p.clear(Color::Blue);
-    fill(p, ox, oy, W, H, Color::LightGray);
-    border(p, ox, oy, W, H, Color::Black, Color::LightGray);
-    (ox, oy)
+// Clock scale: each font "pixel" is DIGIT_SX cols x DIGIT_SY rows.
+const DIGIT_SX: usize = 3;
+const DIGIT_SY: usize = 2;
+const DIGIT_GAP: usize = 2;
+
+// 3x5 digit font, one row per byte (bits 0b100 = left column).
+const DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111], // 0
+    [0b010, 0b110, 0b010, 0b010, 0b111], // 1
+    [0b111, 0b001, 0b111, 0b100, 0b111], // 2
+    [0b111, 0b001, 0b111, 0b001, 0b111], // 3
+    [0b101, 0b101, 0b111, 0b001, 0b001], // 4
+    [0b111, 0b100, 0b111, 0b001, 0b111], // 5
+    [0b111, 0b100, 0b111, 0b101, 0b111], // 6
+    [0b111, 0b001, 0b001, 0b001, 0b001], // 7
+    [0b111, 0b101, 0b111, 0b101, 0b111], // 8
+    [0b111, 0b101, 0b111, 0b001, 0b111], // 9
+];
+
+// ---------- wallpaper helpers ----------
+
+/// Background colour for a given row: blue sky on top, black below.
+fn bg(y: usize, sh: usize) -> Color {
+    if y * 100 < sh * 45 { Color::Blue } else { Color::Black }
 }
 
-fn draw<P: Platform>(
+fn paint<P: Platform>(p: &mut P, sw: usize, sh: usize) {
+    for y in 0..sh {
+        fill(p, 0, y, sw, 1, bg(y, sh));
+    }
+}
+
+/// text() that automatically uses the wallpaper colour behind it.
+fn t<P: Platform>(p: &mut P, x: usize, y: usize, s: &str, fg: Color, sh: usize) {
+    text(p, x, y, s, fg, bg(y, sh));
+}
+
+fn c<P: Platform>(p: &mut P, sw: usize, y: usize, s: &str, fg: Color, sh: usize) {
+    centered(p, 0, sw, y, s, fg, bg(y, sh));
+}
+
+// ---------- clock ----------
+
+/// TODO: replace with a real RTC read (CMOS ports 0x70/0x71 on x86).
+fn wall_time<P: Platform>(_p: &P) -> (u8, u8) {
+    (9, 41)
+}
+
+fn draw_digit<P: Platform>(p: &mut P, x: usize, y: usize, d: u8) {
+    let rows = &DIGITS[(d % 10) as usize];
+    for (r, bits) in rows.iter().enumerate() {
+        for col in 0..3 {
+            if bits & (0b100 >> col) != 0 {
+                fill(p, x + col * DIGIT_SX, y + r * DIGIT_SY, DIGIT_SX, DIGIT_SY, Color::White);
+            }
+        }
+    }
+}
+
+fn draw_clock<P: Platform>(p: &mut P, sw: usize, y: usize, h: u8, m: u8) {
+    let dw = 3 * DIGIT_SX;
+    let total = 4 * dw + DIGIT_SX + 4 * DIGIT_GAP;
+    let mut x = sw.saturating_sub(total) / 2;
+
+    draw_digit(p, x, y, h / 10);
+    x += dw + DIGIT_GAP;
+    draw_digit(p, x, y, h % 10);
+    x += dw + DIGIT_GAP;
+
+    // colon
+    fill(p, x, y + DIGIT_SY, DIGIT_SX, DIGIT_SY, Color::White);
+    fill(p, x, y + 3 * DIGIT_SY, DIGIT_SX, DIGIT_SY, Color::White);
+    x += DIGIT_SX + DIGIT_GAP;
+
+    draw_digit(p, x, y, m / 10);
+    x += dw + DIGIT_GAP;
+    draw_digit(p, x, y, m % 10);
+}
+
+// ---------- avatar + password pill ----------
+
+fn draw_avatar<P: Platform>(p: &mut P, sw: usize, y: usize, initial: char) {
+    let x = sw.saturating_sub(AV_W) / 2;
+    for r in 0..AV_H {
+        // clip the corners to fake a circle
+        let (ax, aw) = if r == 0 || r == AV_H - 1 {
+            (x + 2, AV_W - 4)
+        } else {
+            (x, AV_W)
+        };
+        fill(p, ax, y + r, aw, 1, Color::LightGray);
+    }
+    p.put_char(x + AV_W / 2, y + AV_H / 2, initial, Color::Black, Color::LightGray);
+}
+
+fn draw_pill<P: Platform>(
+    p: &mut P,
+    x: usize,
+    y: usize,
+    input: &Input,
+    placeholder: &str,
+    sh: usize,
+) {
+    let outer = bg(y, sh);
+    fill(p, x + 1, y, PILL_W - 2, 1, Color::DarkGray);
+    p.put_char(x, y, '▐', Color::DarkGray, outer);
+    p.put_char(x + PILL_W - 1, y, '▌', Color::DarkGray, outer);
+
+    let n = input.as_str().chars().count();
+    if n == 0 {
+        text(p, x + 3, y, placeholder, Color::LightGray, Color::DarkGray);
+    } else {
+        let mut dots = String::new();
+        for _ in 0..n.min(PILL_W - 10) {
+            dots.push('•');
+        }
+        dots.push('▌');
+        text(p, x + 3, y, &dots, Color::White, Color::DarkGray);
+        // submit arrow, like macOS
+        text(p, x + PILL_W - 5, y, " → ", Color::Black, Color::White);
+    }
+}
+
+fn draw_user_chips<P: Platform>(p: &mut P, sw: usize, sh: usize, users: &[UserInfo], sel: usize) {
+    if users.len() < 2 {
+        return;
+    }
+    let labels: Vec<String> = users
+        .iter()
+        .map(|u| {
+            let ini = u.name.chars().next().map(|c| c.to_ascii_uppercase()).unwrap_or('?');
+            let name: String = u.name.chars().take(12).collect();
+            format!(" {}  {} ", ini, name)
+        })
+        .collect();
+
+    let total: usize = labels.iter().map(|l| l.chars().count()).sum::<usize>() + 2 * (labels.len() - 1);
+    let mut x = sw.saturating_sub(total) / 2;
+    let y = sh.saturating_sub(4);
+
+    for (i, label) in labels.iter().enumerate() {
+        let (fg, bgc) = if i == sel {
+            (Color::White, Color::DarkGray)
+        } else {
+            (Color::LightGray, Color::Black)
+        };
+        text(p, x, y, label, fg, bgc);
+        x += label.chars().count() + 2;
+    }
+}
+
+// ---------- screens ----------
+
+fn draw_login<P: Platform>(
     p: &mut P,
     users: &[UserInfo],
     sel: usize,
-    pw_len: usize,
+    password: &Input,
     msg: &str,
-    pressed: bool,
+    dx: isize, // horizontal offset for the shake animation
 ) {
-    let (ox, oy) = panel(p);
-    centered(p, ox, W, oy + 1, "ZodiacOS - Sign in", Color::Black, Color::LightGray);
+    let (sw, sh) = p.size();
+    paint(p, sw, sh);
 
-    // ---- users list ----
-    let (lx, ly, lw) = (ox + 2, oy + 3, 22);
-    border(p, lx, ly, lw, LIST_ROWS + 2, Color::Black, Color::LightGray);
-    text(p, lx + 2, ly, " Users ", Color::Black, Color::LightGray);
-    let start = if sel >= LIST_ROWS { sel + 1 - LIST_ROWS } else { 0 };
-    for (row, u) in users.iter().enumerate().skip(start).take(LIST_ROWS) {
-        let y = ly + 1 + (row - start);
-        let name: String = u.name.chars().take(lw - 6).collect();
-        if row == sel {
-            fill(p, lx + 1, y, lw - 2, 1, Color::Blue);
-            text(p, lx + 2, y, &format!("> {}", name), Color::White, Color::Blue);
-        } else {
-            text(p, lx + 2, y, &format!("  {}", name), Color::Black, Color::LightGray);
-        }
-    }
+    let top = (sh / 10).max(2);
+    let (h, m) = wall_time(p);
+    draw_clock(p, sw, top, h, m);
 
-    // ---- profile ----
-    let rx = ox + 27;
+    let ay = sh * 48 / 100;
     let user = &users[sel];
-    fill(p, rx, oy + 3, 9, 5, Color::Cyan);
-    border(p, rx, oy + 3, 9, 5, Color::Black, Color::Cyan);
     let initial = user.name.chars().next().map(|c| c.to_ascii_uppercase()).unwrap_or('?');
-    p.put_char(rx + 4, oy + 5, initial, Color::White, Color::Cyan);
-    text(p, rx + 11, oy + 4, &user.name, Color::Black, Color::LightGray);
-    text(p, rx + 11, oy + 6, &format!("uid: {}", user.uid), Color::DarkGray, Color::LightGray);
 
-    // ---- password box ----
-    text(p, rx, oy + 9, "Password:", Color::Black, Color::LightGray);
-    border(p, rx, oy + 10, 35, 3, Color::Black, Color::LightGray);
-    fill(p, rx + 1, oy + 11, 33, 1, Color::White);
-    let shown = pw_len.min(31);
-    let mut stars = String::new();
-    for _ in 0..shown {
-        stars.push('*');
+    draw_avatar(p, sw, ay, initial);
+    c(p, sw, ay + AV_H + 1, &user.name, Color::White, sh);
+
+    let px = (sw.saturating_sub(PILL_W) / 2) as isize + dx;
+    draw_pill(p, px.max(0) as usize, ay + AV_H + 3, password, "Enter Password", sh);
+
+    if !msg.is_empty() {
+        c(p, sw, ay + AV_H + 5, msg, Color::White, sh);
     }
-    stars.push('_');
-    text(p, rx + 1, oy + 11, &stars, Color::Black, Color::White);
 
-    // ---- login button ----
-    let (fg, bg) = if pressed { (Color::Yellow, Color::Blue) } else { (Color::Black, Color::Green) };
-    text(p, rx, oy + 13, "[  Login  ]", fg, bg);
-
-    text(p, ox + 2, oy + 14, "Tab: next user   Enter: login", Color::DarkGray, Color::LightGray);
-    text(p, ox + 2, oy + 15, msg, Color::Red, Color::LightGray);
+    draw_user_chips(p, sw, sh, users, sel);
+    c(p, sw, sh.saturating_sub(2), "Tab / ↑ ↓  switch user   ·   Enter  log in", Color::LightGray, sh);
 }
 
-/// Reads a hidden line inside a one-line box. Returns the typed text.
-fn read_secret<P: Platform>(p: &mut P, x: usize, y: usize, w: usize) -> String {
-    let mut s = String::new();
-    loop {
-        fill(p, x, y, w, 1, Color::White);
-        let mut stars = String::new();
-        for _ in 0..s.chars().count().min(w - 2) {
-            stars.push('*');
-        }
-        stars.push('_');
-        text(p, x, y, &stars, Color::Black, Color::White);
+fn draw_setup<P: Platform>(p: &mut P, a: &Input, b: &Input, msg: &str) {
+    let (sw, sh) = p.size();
+    paint(p, sw, sh);
 
-        match p.read_key() {
-            Key::Enter => return s,
-            Key::Backspace => {
-                s.pop();
-            }
-            Key::Char(c) if s.len() < 64 => s.push(c),
-            _ => {}
-        }
+    let top = (sh / 10).max(2);
+    let (h, m) = wall_time(p);
+    draw_clock(p, sw, top, h, m);
+
+    let ay = sh * 48 / 100;
+    draw_avatar(p, sw, ay, 'R');
+    c(p, sw, ay + AV_H + 1, "Create root account", Color::White, sh);
+
+    let px = sw.saturating_sub(PILL_W) / 2;
+    draw_pill(p, px, ay + AV_H + 3, a, "New password", sh);
+    draw_pill(p, px, ay + AV_H + 5, b, "Verify password", sh);
+
+    if !msg.is_empty() {
+        c(p, sw, ay + AV_H + 7, msg, Color::White, sh);
+    }
+    c(p, sw, sh.saturating_sub(2), "First boot  ·  Enter  next / confirm", Color::LightGray, sh);
+}
+
+fn shake<P: Platform>(p: &mut P, users: &[UserInfo], sel: usize, password: &Input, msg: &str) {
+    for dx in [-3isize, 3, -2, 2, -1, 1, 0] {
+        draw_login(p, users, sel, password, msg, dx);
+        p.sleep_ms(40);
     }
 }
 
-/// Fresh install: ask for the root password. The kernel does the actual work.
 fn setup_root<P: Platform>(p: &mut P) {
     let mut msg = "";
+    let mut a = Input::new(0, 0, PILL_W, true);
+    let mut b = Input::new(0, 0, PILL_W, true);
+
     loop {
-        let (ox, oy) = panel(p);
-        centered(p, ox, W, oy + 2, "First boot: create the root account", Color::Black, Color::LightGray);
-        text(p, ox + 10, oy + 5, "New password:", Color::Black, Color::LightGray);
-        text(p, ox + 10, oy + 9, "Repeat password:", Color::Black, Color::LightGray);
-        text(p, ox + 10, oy + 14, msg, Color::Red, Color::LightGray);
-        border(p, ox + 10, oy + 6, 40, 3, Color::Black, Color::LightGray);
-        border(p, ox + 10, oy + 10, 40, 3, Color::Black, Color::LightGray);
+        a.clear();
+        b.clear();
 
-        let a = read_secret(p, ox + 11, oy + 7, 38);
-        let b = read_secret(p, ox + 11, oy + 11, 38);
+        loop {
+            draw_setup(p, &a, &b, msg);
+            match p.read_key() {
+                Key::Enter => break,
+                Key::Backspace => a.backspace(),
+                Key::Char(ch) => a.push_char(ch),
+                _ => {}
+            }
+        }
+        loop {
+            draw_setup(p, &a, &b, msg);
+            match p.read_key() {
+                Key::Enter => break,
+                Key::Backspace => b.backspace(),
+                Key::Char(ch) => b.push_char(ch),
+                _ => {}
+            }
+        }
 
-        if a != b {
+        if a.as_str() != b.as_str() {
             msg = "Passwords do not match.";
-        } else if p.create_root(&a).is_err() {
+        } else if p.create_root(a.as_str()).is_err() {
             msg = "Password rejected (empty?).";
         } else {
             return;
@@ -122,55 +262,50 @@ fn setup_root<P: Platform>(p: &mut P) {
     }
 }
 
-/// Shows the sign-in screen until the kernel accepts a login.
 pub fn run<P: Platform>(p: &mut P) -> Session {
     if !p.has_accounts() {
         setup_root(p);
     }
+
     let users: Vec<UserInfo> = p.list_users();
     let mut sel = 0usize;
-    let mut pw = String::new();
+    let mut password = Input::new(0, 0, PILL_W, true);
     let mut msg = "";
     let mut failures = 0u32;
 
     loop {
-        draw(p, &users, sel, pw.chars().count(), msg, false);
+        draw_login(p, &users, sel, &password, msg, 0);
 
         match p.read_key() {
-            Key::Enter => {
-                draw(p, &users, sel, pw.chars().count(), msg, true);
-                p.sleep_ms(120);
-                match p.authenticate(&users[sel].name, &pw) {
-                    Ok(session) => return session,
-                    Err(_) => {
-                        pw.clear();
-                        failures += 1;
-                        if failures >= MAX_ATTEMPTS {
-                            draw(p, &users, sel, 0, "Too many failures, wait...", false);
-                            p.sleep_ms(3000);
-                            failures = 0;
-                            msg = "";
-                        } else {
-                            msg = "Incorrect password.";
-                            p.sleep_ms(800);
-                        }
+            Key::Enter => match p.authenticate(&users[sel].name, password.as_str()) {
+                Ok(session) => return session,
+                Err(_) => {
+                    password.clear();
+                    failures += 1;
+                    if failures >= MAX_ATTEMPTS {
+                        msg = "Too many attempts. Please wait…";
+                        draw_login(p, &users, sel, &password, msg, 0);
+                        p.sleep_ms(3000);
+                        failures = 0;
+                        msg = "";
+                    } else {
+                        msg = "Incorrect password";
+                        shake(p, &users, sel, &password, msg);
                     }
                 }
-            }
-            Key::Backspace => {
-                pw.pop();
-            }
+            },
+            Key::Backspace => password.backspace(),
             Key::Tab | Key::Down => {
                 sel = (sel + 1) % users.len();
-                pw.clear();
+                password.clear();
                 msg = "";
             }
             Key::Up => {
                 sel = (sel + users.len() - 1) % users.len();
-                pw.clear();
+                password.clear();
                 msg = "";
             }
-            Key::Char(c) if pw.len() < 64 => pw.push(c),
+            Key::Char(ch) => password.push_char(ch),
             _ => {}
         }
     }
