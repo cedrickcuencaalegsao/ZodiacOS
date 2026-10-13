@@ -1,0 +1,10 @@
+[package]
+name = "login-manager"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+fontdue = { version = "0.9", default-features = false, features = ["hashbrown"] }

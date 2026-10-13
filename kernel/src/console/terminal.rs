@@ -1,4 +1,4 @@
-use crate::console::memcmd;
+use crate::console::{hwcmd, memcmd, taskcmd};
 use crate::legacy::zpm;
 use crate::{arch, ata, fs, interrupts, keyboard, time, user, vga};
 use crate::{kassert_eq, kprint, kprintln};
@@ -205,9 +205,12 @@ fn execute(line: &str) {
                 core::ptr::write_volatile(execute as *const () as *mut u8, 0);
             },
             Some("bp") => unsafe { core::arch::asm!("int3") },
+            Some("stack") => taskcmd::overflow_test(),
             _ => kprintln!("usage: crash <panic|assert|ud|pf|div|bp>"),
         },
         "meminfo" | "memmap" | "vmem" | "memtest" | "vmtest" => memcmd::run(parts[0], args),
+        "lspci" | "display" => hwcmd::run(parts[0]),
+        "ps" | "threads" | "syncdemo" | "userdemo" => taskcmd::run(parts[0], args),
 
         other => {
             // Installed packages work as commands
@@ -302,6 +305,16 @@ fn help() {
     help_line("vmem", "<hex addr>", "show how an address is mapped");
     help_line("memtest", "", "allocate with Vec, String and Box");
     help_line("vmtest", "", "build and destroy a second address space");
+
+    help_heading("Hardware:");
+    help_line("lspci", "", "list PCI devices");
+    help_line("display", "", "show the screen mode");
+
+    help_heading("Processes:");
+    help_line("ps", "", "list tasks");
+    help_line("threads", "", "three CPU-bound threads sharing the CPU");
+    help_line("syncdemo", "", "lost updates vs atomics vs a mutex");
+    help_line("userdemo", "<hello|read|kptr|priv>", "run a ring 3 program");
 
     vga::set_color(HELP_DESC);
     kprintln!("Installed packages can be run by name.");

@@ -5,7 +5,7 @@ use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
 
 pub const HEAP_START: u64 = paging::HEAP_START;
-pub const HEAP_SIZE: usize = 2 * 1024 * 1024;
+pub const HEAP_SIZE: usize = 32 * 1024 * 1024;
 
 const MIN_BLOCK: usize = 16; // big enough for a free-list node, keeps everything 16-byte aligned
 
@@ -118,12 +118,14 @@ impl KernelHeap {
 
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let irq = crate::arch::save_and_disable_interrupts();
         self.lock();
         let p = unsafe { (*self.heap.get()).alloc(layout) };
         if !p.is_null() {
             self.used.fetch_add(Heap::size_for(layout), Relaxed);
         }
         self.unlock();
+        crate::arch::restore_interrupts(irq);
         p
     }
 
@@ -134,10 +136,12 @@ unsafe impl GlobalAlloc for KernelHeap {
             "dealloc of {:p} outside the kernel heap",
             ptr
         );
+        let irq = crate::arch::save_and_disable_interrupts();
         self.lock();
         unsafe { (*self.heap.get()).insert(ptr as usize, Heap::size_for(layout)) };
         self.used.fetch_sub(Heap::size_for(layout), Relaxed);
         self.unlock();
+        crate::arch::restore_interrupts(irq);
     }
 }
 

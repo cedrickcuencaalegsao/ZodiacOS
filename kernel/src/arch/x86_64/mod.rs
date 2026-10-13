@@ -3,7 +3,7 @@ pub mod cpu;
 pub mod interrupts; // IDT and CPU exception handlers (was idt.rs)
 pub mod paging;     // page table entries (the arch-neutral API is memory/virtual_memory.rs)
 pub mod port_io;
-// pub mod gdt;     // added with the user-mode work (memory part 2)
+pub mod gdt;     // added with the user-mode work (memory part 2)
 
 unsafe extern "C" {
     static __bss_start: u8;
@@ -24,6 +24,7 @@ unsafe fn zero_bss() {
 pub extern "C" fn _start() -> ! {
     unsafe { zero_bss() };
     crate::drivers::serial::init();
+    gdt::init();
     interrupts::init(); // load the IDT so faults show an error screen
     crate::kernel_main()
 }

@@ -81,3 +81,17 @@ macro_rules! log_warn {
 macro_rules! log_error {
     ($($arg:tt)*) => ($crate::slogln!("[ERROR] {}", format_args!($($arg)*)));
 }
+
+/// Non-blocking read from COM1.
+pub fn read_byte() -> Option<u8> {
+    if !READY.load(Relaxed) {
+        return None;
+    }
+    unsafe {
+        if inb(COM1 + 5) & 1 != 0 {
+            Some(inb(COM1))
+        } else {
+            None
+        }
+    }
+}

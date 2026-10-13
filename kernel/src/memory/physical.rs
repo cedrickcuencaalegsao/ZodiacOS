@@ -1,14 +1,18 @@
 use crate::kassert;
-use crate::sync::SpinLock;
+use crate::sync::IrqSpinLock;
 use core::ptr;
 
 pub const FRAME_SIZE: u64 = 4096;
 
-const MEMMAP_ADDR: usize = 0x4000;      // written by boot.asm
+const MEMMAP_ADDR: usize = 0x4000; // written by boot.asm
 const MAX_REGIONS: usize = 32;
-const BITMAP_ADDR: usize = 0x10_0000;   // 1 MiB, inside the boot identity map
-const RESERVED_BELOW: usize = 0x10_0000; // BIOS data, kernel image, stack, VGA: never handed out
-const MAX_FRAMES: usize = 1 << 20;      // tracks up to 4 GiB of RAM
+// const BITMAP_ADDR: usize = 0x10_0000;   // 1 MiB, inside the boot identity map
+// const RESERVED_BELOW: usize = 0x10_0000; // BIOS data, kernel image, stack, VGA: never handed out
+const MAX_FRAMES: usize = 1 << 20; // tracks up to 4 GiB of RAM
+
+unsafe extern "C" {
+    static __kernel_end: u8;
+}
 
 /// One BIOS memory map entry (INT 0x15 E820 layout).
 #[repr(C)]
@@ -22,7 +26,12 @@ pub struct Region {
 }
 
 impl Region {
-    const EMPTY: Region = Region { base: 0, len: 0, kind: 0, attrs: 0 };
+    const EMPTY: Region = Region {
+        base: 0,
+        len: 0,
+        kind: 0,
+        attrs: 0,
+    };
 
     pub fn kind_name(&self) -> &'static str {
         match self.kind {
@@ -39,17 +48,18 @@ impl Region {
 struct Pmm {
     bitmap: *mut u8, // bit set = frame in use
     frames: usize,
-    total: usize,    // allocatable frames after init
+    total: usize, // allocatable frames after init
     free: usize,
-    hint: usize,     // where the next search starts
+    hint: usize, // where the next search starts
     max_phys: u64,
     regions: [Region; MAX_REGIONS],
     nregions: usize,
+    reserved_until: usize, // frames below this are the kernel, BIOS area and the bitmap
 }
 
 unsafe impl Send for Pmm {}
 
-static PMM: SpinLock<Pmm> = SpinLock::new(Pmm {
+static PMM: IrqSpinLock<Pmm> = IrqSpinLock::new(Pmm {
     bitmap: ptr::null_mut(),
     frames: 0,
     total: 0,
@@ -58,6 +68,7 @@ static PMM: SpinLock<Pmm> = SpinLock::new(Pmm {
     max_phys: 0,
     regions: [Region::EMPTY; MAX_REGIONS],
     nregions: 0,
+    reserved_until: 0,
 });
 
 impl Pmm {
@@ -103,7 +114,8 @@ impl Pmm {
             return None;
         }
         let found = if count == 1 {
-            self.scan(self.hint, self.frames, 1).or_else(|| self.scan(0, self.hint, 1))
+            self.scan(self.hint, self.frames, 1)
+                .or_else(|| self.scan(0, self.hint, 1))
         } else {
             self.scan(0, self.frames, count)
         };
@@ -127,6 +139,7 @@ fn reserve(p: &mut Pmm, from: usize, to: usize) {
 }
 
 /// Reads the BIOS memory map and builds the frame bitmap.
+/// Reads the BIOS memory map and builds the frame bitmap.
 pub fn init() {
     let count = unsafe { ptr::read_volatile(MEMMAP_ADDR as *const u32) } as usize;
     kassert!(
@@ -146,10 +159,18 @@ pub fn init() {
     }
 
     let frames = ((max_phys / FRAME_SIZE) as usize).min(MAX_FRAMES);
-    kassert!(frames > RESERVED_BELOW / 4096 + 16, "not enough RAM ({} frames)", frames);
 
+    // The bitmap goes right after the kernel image (code, data and .bss)
+    let kernel_end = unsafe { &raw const __kernel_end as usize };
+    let bitmap_addr = (kernel_end + 4095) & !4095;
     let bytes = (frames + 7) / 8;
-    let bitmap = BITMAP_ADDR as *mut u8;
+    let reserved_end = (bitmap_addr + bytes + 4095) / 4096; // first frame that may be handed out
+    kassert!(
+        reserved_end + 16 < frames,
+        "the kernel and its bitmap do not fit in RAM"
+    );
+
+    let bitmap = bitmap_addr as *mut u8;
     unsafe { ptr::write_bytes(bitmap, 0xFF, bytes) }; // everything starts out "in use"
 
     let mut p = PMM.lock();
@@ -173,10 +194,10 @@ pub fn init() {
         }
     }
 
-    // Keep the first MiB and the bitmap itself out of circulation
-    reserve(&mut p, 0, RESERVED_BELOW / 4096);
-    let bitmap_frames = (bytes + 4095) / 4096;
-    reserve(&mut p, BITMAP_ADDR / 4096, BITMAP_ADDR / 4096 + bitmap_frames);
+    // Everything below the end of the bitmap stays reserved: the BIOS area, the
+    // boot stack, the kernel image and the bitmap itself
+    reserve(&mut p, 0, reserved_end);
+    p.reserved_until = reserved_end;
     p.total = p.free;
 }
 
@@ -197,11 +218,23 @@ pub fn alloc_zeroed() -> Option<u64> {
 }
 
 pub fn free_frame(addr: u64) {
-    kassert!(addr % FRAME_SIZE == 0, "free_frame: {:#x} is not frame aligned", addr);
+    kassert!(
+        addr % FRAME_SIZE == 0,
+        "free_frame: {:#x} is not frame aligned",
+        addr
+    );
     let i = (addr / FRAME_SIZE) as usize;
     let mut p = PMM.lock();
-    kassert!(i < p.frames, "free_frame: {:#x} is outside managed memory", addr);
-    kassert!(i >= RESERVED_BELOW / 4096, "free_frame: {:#x} is reserved memory", addr);
+    kassert!(
+        i < p.frames,
+        "free_frame: {:#x} is outside managed memory",
+        addr
+    );
+    kassert!(
+        i >= p.reserved_until,
+        "free_frame: {:#x} is reserved memory",
+        addr
+    );
     kassert!(p.test(i), "double free of frame {:#x}", addr);
     p.clear(i);
     p.free += 1;
@@ -210,6 +243,7 @@ pub fn free_frame(addr: u64) {
     }
 }
 
+#[allow(dead_code)]
 pub fn free_contiguous(addr: u64, count: usize) {
     for k in 0..count as u64 {
         free_frame(addr + k * FRAME_SIZE);

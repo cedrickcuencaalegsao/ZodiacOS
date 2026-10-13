@@ -29,8 +29,13 @@ CLANG      := /opt/homebrew/opt/llvm/bin/clang
 KERNEL_SRC := $(shell find kernel/src -name '*.rs')
 KERNEL_LIB := kernel/target/$(TARGET)/release/libzodiac_os.a
 
+# One ISO per architecture, each packed from its own staging folder
+ISO_IMG    := $(BUILD_DIR)/zodiacos-v$(VERSION)-$(ARCH).iso
+ISO_ROOT   := $(BUILD_DIR)/iso-$(ARCH)
+
 .DEFAULT_GOAL := all
-.PHONY: all clean clean-disk run run-hvf run-debug watch dirs iso iso-inspect
+.PHONY: all clean clean-disk run run-hvf run-debug watch dirs \
+        iso iso-x86_64 iso-aarch64 iso-all iso-inspect _iso
 
 dirs:
 	@mkdir -p $(BUILD_DIR)
@@ -57,30 +62,43 @@ KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 DISK_IMG   := $(BUILD_DIR)/zodiacos.img
 
-ISO_IMG    := $(BUILD_DIR)/zodiacos-v$(VERSION)-$(ARCH).iso
-ISO_ROOT   := $(BUILD_DIR)/iso
-
 # Data disk lives outside build/ so `make clean` never deletes your files
 DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.img
 
-# Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (640 sectors * 512 bytes)
-MAX_KERNEL_BYTES := 327680
+# Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (768 sectors * 512 bytes)
+MAX_KERNEL_BYTES := 524288
+
+# ---- Host screen size ---------------------------------------------------------
+# Asks macOS for the main screen size (in points). The size is handed to QEMU's
+# VGA card as its preferred mode (EDID); the kernel reads it back at boot.
+# Override by hand with:  make run SCREEN_SIZE=1920x1080
+# Falls back to 1920x1080 if the query fails.
+SCREEN_SIZE ?= $(shell osascript -l JavaScript -e 'ObjC.import("AppKit"); var s=$$.NSScreen.mainScreen.frame.size; Math.round(s.width)+"x"+Math.round(s.height)' 2>/dev/null)
+ifeq ($(SCREEN_SIZE),)
+  SCREEN_SIZE := 1920x1080
+endif
+SCREEN_W := $(word 1,$(subst x, ,$(SCREEN_SIZE)))
+SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
 
 # COM1 output (slog!/log_info! in the kernel) goes to this terminal.
 # To keep the terminal quiet and read logs later, use instead:
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m 256M \
+	-vga none \
+	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
+	-display cocoa,zoom-to-fit=on \
 	-rtc base=localtime \
 	-serial stdio \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
 	-drive format=raw,file=$(DATA_IMG),if=ide,index=1
+# To see a USB controller in `lspci`, add:  -device qemu-xhci -device usb-kbd
 
 all: $(DISK_IMG) $(DATA_IMG)
 	@echo ""
 	@echo "  Build complete! Disk image: $(DISK_IMG)"
-	@echo "  Run with:  make run"
+	@echo "  Run with:  make run     (screen: $(SCREEN_W)x$(SCREEN_H))"
 	@echo ""
 
 $(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) | dirs
@@ -114,9 +132,11 @@ $(DATA_IMG):
 	@mkdir -p $(DATA_DIR)
 	dd if=/dev/zero of=$@ bs=1m count=16 status=none
 
-# NOTE: this ISO is not bootable yet (no El Torito boot record).
-iso: $(DISK_IMG)
+# NOTE: the ISO holds the disk image as a file. It has no El Torito boot
+# record yet, so boot build/zodiacos.img itself (make run).
+_iso: $(DISK_IMG)
 	@echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
+	@rm -rf $(ISO_ROOT)
 	@mkdir -p $(ISO_ROOT)
 	cp $(DISK_IMG) $(ISO_ROOT)/zodiacos.img
 	xorriso -as mkisofs \
@@ -130,11 +150,8 @@ iso: $(DISK_IMG)
 	@echo "       Output:       $(ISO_IMG)"
 	@echo ""
 
-iso-inspect: iso
-	@echo "[ISO]  Inspecting ZodiacOS ISO..."
-	xorriso -indev $(ISO_IMG) -report_el_torito as_mkisofs
-
 run: $(DISK_IMG) $(DATA_IMG)
+	@echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display"
 	$(QEMU) $(QEMU_DRIVES)
 
 # Stops at the first fault and logs CPU resets/interrupts instead of rebooting
@@ -175,6 +192,33 @@ $(KERNEL_ELF): $(AA64_OBJS) $(KERNEL_LIB) $(AA64_LD) | dirs
 	@echo "[LD]   Linking AArch64 kernel..."
 	$(LLD) -T $(AA64_LD) -o $@ $(AA64_OBJS) $(KERNEL_LIB)
 
+# NOTE: the ISO is a container for the kernel ELF. It is not UEFI-bootable yet
+# (that needs the BOOTAA64.EFI stub), so run the ELF with QEMU instead.
+_iso: $(KERNEL_ELF)
+	@echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
+	@rm -rf $(ISO_ROOT)
+	@mkdir -p $(ISO_ROOT)
+	cp $(KERNEL_ELF) $(ISO_ROOT)/kernel-aarch64.elf
+	@printf '%s\n' \
+		"ZodiacOS v$(VERSION) for AArch64" \
+		"" \
+		"Run the kernel in QEMU:" \
+		"  qemu-system-aarch64 -M virt -m 256M -nographic -cpu cortex-a72 -kernel kernel-aarch64.elf" \
+		"" \
+		"This ISO is a container for the kernel. It is not UEFI-bootable yet." \
+		> $(ISO_ROOT)/README.txt
+	xorriso -as mkisofs \
+		-V ZODIACOS \
+		-o $(ISO_IMG) \
+		$(ISO_ROOT)
+	@echo ""
+	@echo "       ISO created successfully!"
+	@echo "       Version:      $(VERSION)"
+	@echo "       Architecture: $(ARCH)"
+	@echo "       Output:       $(ISO_IMG)"
+	@echo "       Note:         not UEFI-bootable yet, see README.txt inside"
+	@echo ""
+
 run: $(KERNEL_ELF)
 	$(QEMU) $(QEMU_MACHINE) -cpu cortex-a72 -kernel $(KERNEL_ELF)
 
@@ -187,6 +231,23 @@ run-debug: $(KERNEL_ELF)
 	@echo "Log written to $(BUILD_DIR)/qemu.log"
 
 endif
+
+# ---- ISO commands ---------------------------------------------------------------
+# Each one re-runs make with the right ARCH, so it works from any setting.
+iso-x86_64:
+	@$(MAKE) --no-print-directory ARCH=x86_64 _iso
+
+iso-aarch64:
+	@$(MAKE) --no-print-directory ARCH=aarch64 _iso
+
+iso-all: iso-x86_64 iso-aarch64
+
+# `make iso` builds the ISO for the current ARCH (default x86_64)
+iso: iso-$(ARCH)
+
+iso-inspect: iso
+	@echo "[ISO]  Inspecting $(ISO_IMG)..."
+	xorriso -indev $(ISO_IMG) -report_el_torito as_mkisofs
 
 # ---- Watch mode: rebuild and relaunch QEMU on every save ----------------------
 # Requires: brew install watchexec

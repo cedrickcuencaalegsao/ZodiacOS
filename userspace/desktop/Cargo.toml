@@ -1,0 +1,9 @@
+[package]
+name = "zodiac-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "zodiac_desktop"
+
+# No dependencies: text uses the kernel's own 8x16 console font, passed in via Host::font.

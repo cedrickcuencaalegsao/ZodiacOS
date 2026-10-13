@@ -2,7 +2,19 @@ use crate::arch::inb;
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
 
+pub const KEY_UP: u8 = 0x80;
+pub const KEY_DOWN: u8 = 0x81;
+pub const KEY_LEFT: u8 = 0x82;
+pub const KEY_RIGHT: u8 = 0x83;
+pub const KEY_HOME: u8 = 0x84;
+pub const KEY_END: u8 = 0x85;
+pub const KEY_PAGE_UP: u8 = 0x86;
+pub const KEY_PAGE_DOWN: u8 = 0x87;
+pub const KEY_DELETE: u8 = 0x88;
+
 static SHIFT: AtomicBool = AtomicBool::new(false);
+static CTRL: AtomicBool = AtomicBool::new(false);
+static EXTENDED: AtomicBool = AtomicBool::new(false); // an 0xE0 prefix was just seen
 
 // Scancode set 1, indexed by scancode (0x00..=0x39). 0 = no printable char.
 const NORMAL: [u8; 58] = [
@@ -19,22 +31,58 @@ const SHIFTED: [u8; 58] = [
     b'Z', b'X', b'C', b'V', b'B', b'N', b'M', b'<', b'>', b'?', 0, b'*', 0, b' ',
 ];
 
-/// Scancode -> character, tracking the shift state.
+/// Scancode -> character or special key code, tracking shift, ctrl and 0xE0 prefixes.
 fn decode(sc: u8) -> Option<u8> {
-    match sc {
+    if sc == 0xE0 {
+        EXTENDED.store(true, Relaxed);
+        return None;
+    }
+    let extended = EXTENDED.swap(false, Relaxed);
+    let released = sc & 0x80 != 0;
+    let code = sc & 0x7F;
+
+    if extended {
+        if code == 0x1D {
+            CTRL.store(!released, Relaxed); // right Ctrl
+            return None;
+        }
+        if released {
+            return None;
+        }
+        return match code {
+            0x48 => Some(KEY_UP),
+            0x50 => Some(KEY_DOWN),
+            0x4B => Some(KEY_LEFT),
+            0x4D => Some(KEY_RIGHT),
+            0x47 => Some(KEY_HOME),
+            0x4F => Some(KEY_END),
+            0x49 => Some(KEY_PAGE_UP),
+            0x51 => Some(KEY_PAGE_DOWN),
+            0x53 => Some(KEY_DELETE),
+            _ => None,
+        };
+    }
+
+    match code {
         0x2A | 0x36 => {
-            SHIFT.store(true, Relaxed);
+            SHIFT.store(!released, Relaxed);
             None
         }
-        0xAA | 0xB6 => {
-            SHIFT.store(false, Relaxed);
+        0x1D => {
+            CTRL.store(!released, Relaxed);
             None
         }
-        _ if sc & 0x80 != 0 => None, // key release
+        _ if released => None,
         _ => {
             let table = if SHIFT.load(Relaxed) { &SHIFTED } else { &NORMAL };
-            let c = *table.get(sc as usize)?;
-            if c == 0 { None } else { Some(c) }
+            let c = *table.get(code as usize)?;
+            if c == 0 {
+                return None;
+            }
+            if CTRL.load(Relaxed) && c.is_ascii_alphabetic() {
+                return Some(c & 0x1F); // Ctrl+A = 1 ... Ctrl+L = 12 ... Ctrl+Z = 26
+            }
+            Some(c)
         }
     }
 }
@@ -55,16 +103,7 @@ fn push(c: u8) {
     HEAD.store(next, Release);
 }
 
-/// Called from the IRQ1 handler.
-pub fn handle_irq() {
-    let sc = unsafe { inb(0x60) };
-    if let Some(c) = decode(sc) {
-        push(c);
-    }
-}
-
-/// Non-blocking: next typed character, if any.
-pub fn read_char() -> Option<u8> {
+fn pop() -> Option<u8> {
     let tail = TAIL.load(Relaxed);
     if tail == HEAD.load(Acquire) {
         return None;
@@ -74,14 +113,38 @@ pub fn read_char() -> Option<u8> {
     Some(c)
 }
 
-/// Blocks until a key is typed. `hlt` idles the CPU until the next interrupt
-/// (the timer ticks every 10 ms, so a key is picked up at the latest then).
+/// Called from the IRQ1 handler.
+pub fn handle_irq() {
+    let sc = unsafe { inb(0x60) };
+    if let Some(c) = decode(sc) {
+        push(c);
+    }
+}
+
+/// Non-blocking: next typed key. Falls back to the serial port, so you can also
+/// type into the terminal that started QEMU (`-serial stdio`).
+pub fn read_char() -> Option<u8> {
+    if let Some(c) = pop() {
+        return Some(c);
+    }
+    crate::serial::read_byte().map(|b| match b {
+        b'\r' => b'\n',
+        0x7F => 8, // the terminal's backspace key
+        other => other,
+    })
+}
+
+/// Blocks until a key is typed. `hlt` idles the CPU until the next interrupt.
 pub fn wait_char() -> u8 {
     loop {
         if let Some(c) = read_char() {
             return c;
         }
-        unsafe { asm!("hlt", options(nomem, nostack)) };
+        if crate::scheduler::ready() {
+            crate::scheduler::sleep_ms(10); // other threads run in the meantime
+        } else {
+            unsafe { asm!("hlt", options(nomem, nostack)) };
+        }
     }
 }
 

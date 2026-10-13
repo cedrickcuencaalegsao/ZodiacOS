@@ -13,8 +13,13 @@ pub mod aarch64;
 pub use aarch64 as current;
 
 // Architecture-neutral operations
-pub use current::cpu::{halt, reboot, shutdown, sleep_ms};
+#[allow(unused_imports)]
+#[allow(unused_imports)]
+pub use current::cpu::{
+    disable_interrupts, enable_interrupts, halt, interrupts_enabled, reboot,
+    restore_interrupts, save_and_disable_interrupts, shutdown, sleep_ms,
+};
 
 // Port I/O exists only on x86. Drivers that use it are x86-only too.
 #[cfg(target_arch = "x86_64")]
-pub use current::port_io::{inb, inw, outb, outw};
+pub use current::port_io::{inb, inl, inw, outb, outl, outw};
