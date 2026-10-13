@@ -48,6 +48,120 @@ impl Framebuffer {
             );
         }
     }
+
+    // ---- Graphics primitives (splash / HD UI) ------------------------------------
+
+    /// Blend `src` over `dst` with alpha 0..=255 (colors are 0xRRGGBB).
+    #[inline]
+    fn blend(dst: u32, src: u32, a: u32) -> u32 {
+        let ia = 255 - a;
+        let ch = |shift: u32| {
+            let s = (src >> shift) & 0xFF;
+            let d = (dst >> shift) & 0xFF;
+            ((s * a + d * ia) / 255) << shift
+        };
+        ch(16) | ch(8) | ch(0)
+    }
+
+    /// Plot one pixel with optional transparency, clipped to the screen.
+    #[inline]
+    fn put_px(&self, x: usize, y: usize, color: u32, alpha: u32) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        unsafe {
+            let p = self.row_ptr(y).add(x);
+            let out = if alpha >= 255 {
+                color
+            } else {
+                Self::blend(p.read_volatile(), color, alpha)
+            };
+            p.write_volatile(out);
+        }
+    }
+
+    /// Fill a horizontal span with optional transparency.
+    fn span(&self, x: usize, y: usize, w: usize, color: u32, alpha: u32) {
+        if y >= self.height || x >= self.width {
+            return;
+        }
+        let w = w.min(self.width - x);
+        if alpha >= 255 {
+            unsafe { core::slice::from_raw_parts_mut(self.row_ptr(y).add(x), w).fill(color) };
+        } else {
+            for i in 0..w {
+                self.put_px(x + i, y, color, alpha);
+            }
+        }
+    }
+
+    /// Vertical gradient, top -> bottom (0xRRGGBB).
+    pub fn fill_gradient(&self, x: usize, y: usize, w: usize, h: usize, top: u32, bottom: u32) {
+        if h == 0 {
+            return;
+        }
+        let denom = (h - 1).max(1);
+        for i in 0..h {
+            let t = (i * 255 / denom) as u32;
+            self.span(x, y + i, w, Self::blend(top, bottom, t), 255);
+        }
+    }
+
+    /// Anti-aliased rounded rectangle (4x4 supersampled corners).
+    pub fn fill_round_rect(
+        &self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        r: usize,
+        color: u32,
+        alpha: u8,
+    ) {
+        let r = r.min(w / 2).min(h / 2);
+        let a = alpha as u32;
+        for row in 0..h {
+            let py = y + row;
+            let in_corner_rows = row < r || row >= h - r;
+            if !in_corner_rows {
+                self.span(x, py, w, color, a);
+                continue;
+            }
+            self.span(x + r, py, w - 2 * r, color, a);
+
+            // circle centre (pixel coords) for this row's corner
+            let cy = if row < r { (y + r) as i32 } else { (y + h - r) as i32 };
+            let rad = r as i32 * 8;
+            for i in 0..r {
+                for &(px, cx) in &[(x + i, (x + r) as i32), (x + w - 1 - i, (x + w - r) as i32)] {
+                    let mut hits = 0u32;
+                    for sy in 0..4i32 {
+                        for sx in 0..4i32 {
+                            let ux = px as i32 * 8 + 2 * sx + 1 - cx * 8;
+                            let uy = py as i32 * 8 + 2 * sy + 1 - cy * 8;
+                            if ux * ux + uy * uy <= rad * rad {
+                                hits += 1;
+                            }
+                        }
+                    }
+                    if hits > 0 {
+                        self.put_px(px, py, color, a * hits / 16);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 8x16 glyph scaled by an integer factor, transparent background.
+    pub fn draw_glyph_scaled(&self, x: usize, y: usize, glyph: &[u8; 16], scale: usize, color: u32) {
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..8 {
+                if bits & (0x80 >> col) != 0 {
+                    self.fill_rect(x + col * scale, y + row * scale, scale, scale, color);
+                }
+            }
+        }
+    }
 }
 
 // ---- The 8x16 font, copied out of VGA memory before the mode switch ----------

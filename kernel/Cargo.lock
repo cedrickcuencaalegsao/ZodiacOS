@@ -65,9 +65,6 @@ checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 [[package]]
 name = "login-manager"
 version = "0.1.0"
-dependencies = [
- "sha2",
-]
 
 [[package]]
 name = "sha2"
@@ -97,4 +94,5 @@ name = "zodic_os"
 version = "0.1.1"
 dependencies = [
  "login-manager",
+ "sha2",
 ]
