@@ -1,3 +1,4 @@
+pub mod desktop_host;
 pub mod fbcon;
 pub mod hwcmd;
 pub mod login;

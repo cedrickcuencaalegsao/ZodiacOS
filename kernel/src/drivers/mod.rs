@@ -7,6 +7,7 @@ pub mod pci;
 pub mod rtc; // CMOS clock
 pub mod serial; // 16550 on x86, PL011 on AArch64 later
 pub mod storage;
+pub mod mouse; // PS/2
 
 /// Used when the card reports no preferred size.
 const FALLBACK_WIDTH: u16 = 1920;

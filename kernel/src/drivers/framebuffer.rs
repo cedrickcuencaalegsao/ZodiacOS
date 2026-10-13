@@ -270,6 +270,22 @@ pub fn glyph(ch: u8) -> &'static [u8; 16] {
     unsafe { &(*FONT.0.get())[ch as usize] }
 }
 
+/// The captured 8x16 console font (256 glyphs), used by the desktop for its text.
+pub fn font_table() -> &'static [[u8; 16]; 256] {
+    unsafe { &*FONT.0.get() }
+}
+
+// ---- The active framebuffer, so the desktop can find it later ----------------
+struct FbSlot(UnsafeCell<Option<Framebuffer>>);
+unsafe impl Sync for FbSlot {}
+
+static ACTIVE_FB: FbSlot = FbSlot(UnsafeCell::new(None));
+
+/// The framebuffer, if a graphics mode was set up successfully.
+pub fn get() -> Option<Framebuffer> {
+    unsafe { *ACTIVE_FB.0.get() }
+}
+
 /// The BIOS keeps its text font in VGA plane 2, 32 bytes per character.
 fn capture_vga_font() -> Result<(), &'static str> {
     unsafe {
@@ -329,6 +345,7 @@ fn capture_vga_font() -> Result<(), &'static str> {
 pub fn init(width: u16, height: u16) -> Result<(), &'static str> {
     capture_vga_font()?; // must happen before the mode switch
     let fb = super::bochs_vga::init(width, height)?;
+    unsafe { *ACTIVE_FB.0.get() = Some(fb) }; // remember it for the desktop
     crate::console::fbcon::activate(fb, crate::vga::attr());
     Ok(())
 }
