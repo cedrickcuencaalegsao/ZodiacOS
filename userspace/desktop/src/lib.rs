@@ -28,10 +28,19 @@ pub enum Key {
 #[derive(Clone, Copy)]
 pub enum Event {
     /// Relative pointer movement in pixels (positive y = down).
-    MouseMove { dx: i32, dy: i32 },
+    MouseMove {
+        dx: i32,
+        dy: i32,
+    },
     /// button: 0 = left, 1 = right, 2 = middle
-    Button { button: u8, down: bool },
-    Key { key: Key, down: bool },
+    Button {
+        button: u8,
+        down: bool,
+    },
+    Key {
+        key: Key,
+        down: bool,
+    },
 }
 
 /// Everything the desktop needs from the kernel.
@@ -46,4 +55,8 @@ pub trait Host {
     fn present(&mut self, pixels: &[u32]);
     /// The console font used for all text.
     fn font(&self) -> &'static Font;
+    /// Present only the rectangle (x, y, w, h) of `pixels`. Override for partial updates.
+    fn present_rect(&mut self, pixels: &[u32], _x: usize, _y: usize, _w: usize, _h: usize) {
+        self.present(pixels);
+    }
 }

@@ -1,4 +1,5 @@
 .DS_Store
 /build
 /kernel/target
+/userspace/desktop/target
 /disk
