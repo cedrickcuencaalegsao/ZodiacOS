@@ -140,3 +140,71 @@ pub fn write_sector(drive: u8, lba: u32, buf: &[u8; 512]) -> bool {
     unsafe { outb(io + 7, 0xE7) }; // flush write cache
     wait_not_busy(io)
 }
+
+
+// ---- BlockDevice front end ----------------------------------------------------
+use crate::base::error::{Error, Result};
+use crate::base::sync::Mutex;
+use alloc::{string::String, sync::Arc};
+
+/// One ATA command at a time, whichever drive it targets: the two drives of a
+/// channel share registers, so commands must not interleave.
+static ATA_LOCK: Mutex<()> = Mutex::new(());
+
+pub struct AtaDisk {
+    drive: u8,
+    sectors: u64,
+    name: String,
+}
+
+impl super::BlockDevice for AtaDisk {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn block_count(&self) -> u64 {
+        self.sectors
+    }
+
+    fn read_blocks(&self, lba: u64, count: usize, buf: &mut [u8]) -> Result<()> {
+        if buf.len() < count * 512 || lba + count as u64 > self.sectors {
+            return Err(Error::InvalidArgument);
+        }
+        let _guard = ATA_LOCK.lock();
+        for i in 0..count {
+            let sector: &mut [u8; 512] = (&mut buf[i * 512..(i + 1) * 512]).try_into().unwrap();
+            if !read_sector(self.drive, (lba + i as u64) as u32, sector) {
+                return Err(Error::Io);
+            }
+        }
+        Ok(())
+    }
+
+    fn write_blocks(&self, lba: u64, count: usize, data: &[u8]) -> Result<()> {
+        if data.len() < count * 512 || lba + count as u64 > self.sectors {
+            return Err(Error::InvalidArgument);
+        }
+        let _guard = ATA_LOCK.lock();
+        for i in 0..count {
+            let sector: &[u8; 512] = (&data[i * 512..(i + 1) * 512]).try_into().unwrap();
+            if !write_sector(self.drive, (lba + i as u64) as u32, sector) {
+                return Err(Error::Io);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Registers every ATA disk that answers IDENTIFY.
+pub fn probe() {
+    let names = ["hda", "hdb", "hdc", "hdd"];
+    for drive in 0..4u8 {
+        if let Some(info) = identify(drive) {
+            super::register(Arc::new(AtaDisk {
+                drive,
+                sectors: info.sectors as u64,
+                name: String::from(names[drive as usize]),
+            }));
+        }
+    }
+}

@@ -66,8 +66,8 @@ DISK_IMG   := $(BUILD_DIR)/zodiacos.img
 DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.img
 
-# Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (768 sectors * 512 bytes)
-MAX_KERNEL_BYTES := 524288
+# Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (1120 sectors * 512 bytes)
+MAX_KERNEL_BYTES := 573440
 
 # ---- Host screen size ---------------------------------------------------------
 # Asks macOS for the main screen size (in points). The size is handed to QEMU's
@@ -119,11 +119,20 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	@test $$(wc -c < $@) -le $(MAX_KERNEL_BYTES) || \
 		(echo "ERROR: kernel exceeds $(MAX_KERNEL_BYTES) bytes. Raise KERNEL_SECTORS in $(BOOT_ASM) and MAX_KERNEL_BYTES here." && exit 1)
 
-$(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN)
+INITRAMFS_DIR := initramfs
+INITRAMFS_IMG := $(BUILD_DIR)/initramfs.img
+INITRAMFS_LBA := 2048
+
+$(INITRAMFS_IMG): $(shell find $(INITRAMFS_DIR) -type f 2>/dev/null) scripts/mkinitramfs.py | dirs
+	@echo "[INITRD] Packing $(INITRAMFS_DIR)/ ..."
+	python3 scripts/mkinitramfs.py $(INITRAMFS_DIR) $@
+
+$(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN) $(INITRAMFS_IMG)
 	@echo "[IMG]  Creating disk image..."
-	dd if=/dev/zero     of=$@ bs=1m  count=64 status=none
-	dd if=$(BOOT_BIN)   of=$@ bs=512 seek=0 conv=notrunc status=none
-	dd if=$(KERNEL_BIN) of=$@ bs=512 seek=1 conv=notrunc status=none
+	dd if=/dev/zero        of=$@ bs=1m  count=64 status=none
+	dd if=$(BOOT_BIN)      of=$@ bs=512 seek=0 conv=notrunc status=none
+	dd if=$(KERNEL_BIN)    of=$@ bs=512 seek=1 conv=notrunc status=none
+	dd if=$(INITRAMFS_IMG) of=$@ bs=512 seek=$(INITRAMFS_LBA) conv=notrunc status=none
 	@echo "       Disk image ready: $@"
 
 # Data disk (created once, never rebuilt)

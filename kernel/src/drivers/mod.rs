@@ -3,11 +3,11 @@ use crate::{log_info, log_warn};
 pub mod bochs_vga;
 pub mod framebuffer;
 pub mod keyboard; // PS/2
+pub mod mouse;
 pub mod pci;
 pub mod rtc; // CMOS clock
 pub mod serial; // 16550 on x86, PL011 on AArch64 later
-pub mod storage;
-pub mod mouse; // PS/2
+pub mod storage; // PS/2
 
 /// Used when the card reports no preferred size.
 const FALLBACK_WIDTH: u16 = 1920;
@@ -24,6 +24,7 @@ fn clamp_mode((w, h): (u16, u16)) -> (u16, u16) {
 }
 
 pub fn init() {
+    storage::init();
     let devices = pci::init();
     log_info!("pci: {} devices", devices);
 
@@ -31,11 +32,21 @@ pub fn init() {
     let (width, height) = match bochs_vga::preferred_mode() {
         Some(mode) => {
             let (w, h) = clamp_mode(mode);
-            log_info!("display: preferred mode {}x{} -> using {}x{}", mode.0, mode.1, w, h);
+            log_info!(
+                "display: preferred mode {}x{} -> using {}x{}",
+                mode.0,
+                mode.1,
+                w,
+                h
+            );
             (w, h)
         }
         None => {
-            log_warn!("display: no EDID, using {}x{}", FALLBACK_WIDTH, FALLBACK_HEIGHT);
+            log_warn!(
+                "display: no EDID, using {}x{}",
+                FALLBACK_WIDTH,
+                FALLBACK_HEIGHT
+            );
             (FALLBACK_WIDTH, FALLBACK_HEIGHT)
         }
     };

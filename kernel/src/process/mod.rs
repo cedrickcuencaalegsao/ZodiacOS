@@ -8,7 +8,7 @@ use crate::base::sync::Mutex;
 use crate::scheduler::{self, MAX_TASKS};
 use crate::{arch, kassert, paging, pmm, vga};
 use crate::{kprintln, slogln};
-use task::{name_str, Entry, State, Task};
+use task::{Entry, State, Task, name_str};
 
 // Each kernel stack gets a slot in its own virtual region: one unmapped guard page
 // (so an overflow faults instead of corrupting a neighbour) plus 32 KiB of stack.
@@ -73,7 +73,14 @@ fn map_stack(slot: usize) -> Result<u64, Error> {
             unmap_stack_locked(slot);
             return Err(Error::OutOfMemory);
         };
-        if paging::map_page(pml4, base + (page + 1) * 4096, frame, paging::WRITABLE | paging::NX).is_err() {
+        if paging::map_page(
+            pml4,
+            base + (page + 1) * 4096,
+            frame,
+            paging::WRITABLE | paging::NX,
+        )
+        .is_err()
+        {
             pmm::free_frame(frame);
             unmap_stack_locked(slot);
             return Err(Error::OutOfMemory);
@@ -180,7 +187,11 @@ pub fn spawn_user(name: &str, program: &[u8]) -> Result<u32, Error> {
         // not writable: user code can't modify itself
         let code = map_user_page(space, USER_CODE, paging::USER)?;
         unsafe { core::ptr::copy_nonoverlapping(program.as_ptr(), code as *mut u8, program.len()) };
-        map_user_page(space, USER_STACK, paging::USER | paging::WRITABLE | paging::NX)?;
+        map_user_page(
+            space,
+            USER_STACK,
+            paging::USER | paging::WRITABLE | paging::NX,
+        )?;
         Ok(())
     })();
     if let Err(e) = setup {
@@ -188,7 +199,10 @@ pub fn spawn_user(name: &str, program: &[u8]) -> Result<u32, Error> {
         return Err(e);
     }
 
-    let entry = Entry::User { rip: USER_CODE, rsp: USER_STACK + 4096 };
+    let entry = Entry::User {
+        rip: USER_CODE,
+        rsp: USER_STACK + 4096,
+    };
     match create(name, entry, space, true) {
         Ok((_, pid)) => Ok(pid),
         Err(e) => {
@@ -203,13 +217,19 @@ pub fn spawn_user(name: &str, program: &[u8]) -> Result<u32, Error> {
 // ---------------------------------------------------------------------------
 
 fn rd16(b: &[u8], o: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(b.get(o..o.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        b.get(o..o.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 fn rd32(b: &[u8], o: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(b.get(o..o.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        b.get(o..o.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 fn rd64(b: &[u8], o: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(b.get(o..o.checked_add(8)?)?.try_into().ok()?))
+    Some(u64::from_le_bytes(
+        b.get(o..o.checked_add(8)?)?.try_into().ok()?,
+    ))
 }
 
 /// Maps every PT_LOAD segment of `image` into `space`, plus the user stack.
@@ -237,7 +257,9 @@ fn load_elf(space: u64, image: &[u8]) -> Result<u64, Error> {
     let stack_bottom = USER_STACK + 4096 - USER_STACK_PAGES * 4096;
 
     for i in 0..phnum {
-        let ph = phoff.checked_add(i.checked_mul(phentsize).ok_or_else(bad)?).ok_or_else(bad)?;
+        let ph = phoff
+            .checked_add(i.checked_mul(phentsize).ok_or_else(bad)?)
+            .ok_or_else(bad)?;
         if rd32(image, ph) != Some(PT_LOAD) {
             continue;
         }
@@ -284,7 +306,11 @@ fn load_elf(space: u64, image: &[u8]) -> Result<u64, Error> {
     }
 
     for p in 0..USER_STACK_PAGES {
-        map_user_page(space, stack_bottom + p * 4096, paging::USER | paging::WRITABLE | paging::NX)?;
+        map_user_page(
+            space,
+            stack_bottom + p * 4096,
+            paging::USER | paging::WRITABLE | paging::NX,
+        )?;
     }
     Ok(entry)
 }
@@ -299,7 +325,10 @@ pub fn spawn_elf(name: &str, image: &[u8]) -> Result<u32, Error> {
             return Err(e);
         }
     };
-    let entry = Entry::User { rip, rsp: USER_STACK + 4096 };
+    let entry = Entry::User {
+        rip,
+        rsp: USER_STACK + 4096,
+    };
     match create(name, entry, space, true) {
         Ok((_, pid)) => Ok(pid),
         Err(e) => {
@@ -327,11 +356,18 @@ pub fn exit_current(code: i32) -> ! {
 
 /// Frees a zombie's stack and address space. Returns its exit code.
 fn reap_slot(slot: usize) -> i32 {
-    let (space, code) = scheduler::with(|s| (s.tasks[slot].address_space, s.tasks[slot].exit_code));
+    let (space, code, pid) = scheduler::with(|s| {
+        (
+            s.tasks[slot].address_space,
+            s.tasks[slot].exit_code,
+            s.tasks[slot].pid,
+        )
+    });
     unmap_stack(slot);
     if space != 0 {
         paging::destroy_address_space(space);
     }
+    crate::filesystem::file::process_exit(pid);
     scheduler::with(|s| s.tasks[slot] = Task::EMPTY);
     code
 }
@@ -358,7 +394,11 @@ pub fn join(pid: u32) -> Option<i32> {
 #[allow(dead_code)]
 pub fn detach(pid: u32) {
     scheduler::with(|s| {
-        if let Some(t) = s.tasks.iter_mut().find(|t| t.pid == pid && t.state != State::Free) {
+        if let Some(t) = s
+            .tasks
+            .iter_mut()
+            .find(|t| t.pid == pid && t.state != State::Free)
+        {
             t.detached = true;
         }
     });
@@ -383,11 +423,18 @@ pub fn user_fault(title: &str, rip: u64, code: Option<u64>, cr2: Option<u64>) ->
     match cr2 {
         Some(addr) => kprintln!(
             "\n[process {} '{}' killed: {} at {:#x}, address {:#x}]",
-            pid, name_str(&name), title, rip, addr
+            pid,
+            name_str(&name),
+            title,
+            rip,
+            addr
         ),
         None => kprintln!(
             "\n[process {} '{}' killed: {} at {:#x}]",
-            pid, name_str(&name), title, rip
+            pid,
+            name_str(&name),
+            title,
+            rip
         ),
     }
     vga::set_color(0x0F);
@@ -409,6 +456,9 @@ pub fn init() {
     let (slot, _) = create("idle", Entry::Kernel(idle_main), 0, false)
         .expect("process: cannot create the idle task");
     scheduler::set_idle(slot);
-    crate::log_info!("scheduler: round-robin, {} ms slice, idle task in slot {}",
-        scheduler::policy::QUANTUM_TICKS as u64 * 1000 / crate::interrupts::TIMER_HZ as u64, slot);
+    crate::log_info!(
+        "scheduler: round-robin, {} ms slice, idle task in slot {}",
+        scheduler::policy::QUANTUM_TICKS as u64 * 1000 / crate::interrupts::TIMER_HZ as u64,
+        slot
+    );
 }
