@@ -88,7 +88,7 @@ QEMU_DRIVES := \
 	-m 256M \
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
-	-display cocoa,zoom-to-fit=on \
+	-display cocoa\
 	-rtc base=localtime \
 	-serial stdio \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
@@ -258,7 +258,8 @@ watch:
 clean:
 	@echo "[CLN]  Cleaning..."
 	rm -rf $(BUILD_DIR)
-	cd kernel && cargo clean
+	cd kernel && cargo clean && cd ..
+	cd userspace/desktop && cargo clean && cd ../../
 	@echo "       Done. (data disk in disk/ was kept)"
 
 # Wipes the x86 data disk too (all files you saved inside ZodiacOS)

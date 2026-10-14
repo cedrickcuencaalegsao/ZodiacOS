@@ -286,6 +286,17 @@ pub fn get() -> Option<Framebuffer> {
     unsafe { *ACTIVE_FB.0.get() }
 }
 
+/// How many full screens the video memory can flip between (2 = double buffering works).
+/// Page 1 starts `height * pitch` bytes after `Framebuffer::base`.
+pub fn pages() -> usize {
+    super::bochs_vga::pages()
+}
+
+/// Makes screen `page` the one the monitor shows; drawing on the other page is invisible.
+pub fn show_page(page: usize) {
+    super::bochs_vga::show_page(page)
+}
+
 /// The BIOS keeps its text font in VGA plane 2, 32 bytes per character.
 fn capture_vga_font() -> Result<(), &'static str> {
     unsafe {
