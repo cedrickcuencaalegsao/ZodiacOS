@@ -21,6 +21,7 @@ pub enum Error {
     Unsupported,
     BadAddress,
     InvalidExecutable,
+    TooManyFiles,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -46,6 +47,7 @@ impl Error {
             Error::NotEmpty => 39,
             Error::BadAddress => 14,
             Error::InvalidExecutable => 85,
+            Error::TooManyFiles => 24,
         }
     }
 }
@@ -70,6 +72,7 @@ impl fmt::Display for Error {
             Error::Unsupported => "operation not supported",
             Error::BadAddress => "bad address",
             Error::InvalidExecutable => "invalid executable",
+            Error::TooManyFiles => "to many open files",
         })
     }
 }

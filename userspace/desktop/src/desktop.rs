@@ -1,7 +1,9 @@
 //! The desktop: windows, z-order, pointer handling and the main loop.
 use crate::apps::{self, App};
 use crate::gfx::{text_width, Gfx, BL, BR, TL, TR};
+use crate::term::TermState;
 use crate::{dock, panel, wallpaper, Event, Host, Key};
+use zodiac_abi::{Action, Key as TermKey};
 
 const MAX_WIN: usize = 8;
 const TITLE_H: i32 = 30;
@@ -42,6 +44,8 @@ struct Desktop {
     last_key: u32,      // hover state of everything that reacts to the pointer
     shown: (i32, i32),  // where the cursor is currently painted
     quit: bool,
+    term: TermState, // the Terminal window's shell + screen
+    now: u64,        // seconds since boot, refreshed every loop
 }
 
 impl Desktop {
@@ -62,6 +66,8 @@ impl Desktop {
             last_key: 0,
             shown: (sw / 2, sh / 2),
             quit: false,
+            term: TermState::new(),
+            now: 0,
         }
     }
 
@@ -107,6 +113,11 @@ impl Desktop {
     fn close(&mut self, idx: usize) {
         self.wins[idx].open = false;
         self.remove_from_order(idx);
+    }
+
+    /// True when the front-most window is the Terminal.
+    fn terminal_focused(&self) -> bool {
+        self.count > 0 && self.wins[self.order[self.count - 1]].app == App::Terminal
     }
 
     fn hit_test(&self, x: i32, y: i32) -> Option<usize> {
@@ -188,23 +199,36 @@ impl Desktop {
                 button: 0,
                 down: false,
             } => self.drag = None,
-            Event::Key { key, down: true } => match key {
-                // keyboard fallback when there is no mouse
-                Key::Up => self.move_cursor(0, -KEY_STEP),
-                Key::Down => self.move_cursor(0, KEY_STEP),
-                Key::Left => self.move_cursor(-KEY_STEP, 0),
-                Key::Right => self.move_cursor(KEY_STEP, 0),
-                Key::Enter => {
-                    // Enter = click; pressing it again drops a dragged window
-                    if self.drag.is_some() {
-                        self.drag = None;
-                    } else {
-                        self.on_left_down();
+            Event::Key { key, down: true } => {
+                // While the Terminal is the front window, typing goes to its shell.
+                if self.terminal_focused() {
+                    if let Some(tk) = to_term_key(key) {
+                        if self.term.on_key(tk, self.now) != Action::None {
+                            // TODO: route shutdown / restart to the host (power-off / reset)
+                            self.quit = true;
+                        }
+                        self.scene_dirty = true;
+                        return;
                     }
                 }
-                Key::Escape => self.menu = false,
-                Key::Char(_) => {}
-            },
+                match key {
+                    // keyboard fallback when there is no mouse
+                    Key::Up => self.move_cursor(0, -KEY_STEP),
+                    Key::Down => self.move_cursor(0, KEY_STEP),
+                    Key::Left => self.move_cursor(-KEY_STEP, 0),
+                    Key::Right => self.move_cursor(KEY_STEP, 0),
+                    Key::Enter => {
+                        // Enter = click; pressing it again drops a dragged window
+                        if self.drag.is_some() {
+                            self.drag = None;
+                        } else {
+                            self.on_left_down();
+                        }
+                    }
+                    Key::Escape => self.menu = false,
+                    Key::Char(_) => {}
+                }
+            }
             _ => return,
         }
         self.scene_dirty = true;
@@ -230,13 +254,13 @@ impl Desktop {
     }
 
     /// Scene plus pointer (used when there is no room for the partial-update buffers).
-    fn draw(&self, g: &mut Gfx, secs: u64, with_wallpaper: bool) {
+    fn draw(&mut self, g: &mut Gfx, secs: u64, with_wallpaper: bool) {
         self.draw_scene(g, secs, with_wallpaper);
         draw_cursor(g, self.mx, self.my);
     }
 
     /// Everything except the pointer. `with_wallpaper`: false when a cached wallpaper was already copied in.
-    fn draw_scene(&self, g: &mut Gfx, secs: u64, with_wallpaper: bool) {
+    fn draw_scene(&mut self, g: &mut Gfx, secs: u64, with_wallpaper: bool) {
         if with_wallpaper {
             wallpaper::draw(g);
         }
@@ -245,7 +269,7 @@ impl Desktop {
             let dx = self.mx - (w.x + 18);
             let dy = self.my - (w.y + TITLE_H / 2);
             let close_hover = dx * dx + dy * dy <= 81;
-            draw_window(g, w, k + 1 == self.count, close_hover, secs);
+            draw_window(g, w, k + 1 == self.count, close_hover, secs, &mut self.term);
         }
 
         let mut open = [false; 3];
@@ -266,7 +290,30 @@ impl Desktop {
     }
 }
 
-fn draw_window(g: &mut Gfx, w: &Window, focused: bool, close_hover: bool, secs: u64) {
+/// Maps a desktop key to the shell's key type (None = the shell ignores it).
+/// The keyboard driver sends Backspace as byte 8 (or 0x7F from serial) and Tab as b'\t'.
+fn to_term_key(k: Key) -> Option<TermKey> {
+    match k {
+        Key::Char(8) | Key::Char(0x7F) => Some(TermKey::Backspace),
+        Key::Char(b'\n') | Key::Char(b'\r') => Some(TermKey::Enter),
+        Key::Char(b'\t') => Some(TermKey::Tab),
+        Key::Char(c) if (0x20..0x7F).contains(&c) => Some(TermKey::Char(c as char)),
+        Key::Char(_) => None,
+        Key::Enter => Some(TermKey::Enter),
+        Key::Up => Some(TermKey::Up),
+        Key::Down => Some(TermKey::Down),
+        _ => None,
+    }
+}
+
+fn draw_window(
+    g: &mut Gfx,
+    w: &Window,
+    focused: bool,
+    close_hover: bool,
+    secs: u64,
+    term: &mut TermState,
+) {
     // layered soft shadow (deeper when focused)
     let shadow: &[(i32, u32)] = if focused {
         &[(3, 26), (8, 20), (14, 14), (22, 8)]
@@ -380,6 +427,7 @@ fn draw_window(g: &mut Gfx, w: &Window, focused: bool, close_hover: bool, secs: 
         w.w - 2,
         w.h - TITLE_H - 1,
         secs,
+        term,
     );
 }
 
@@ -460,10 +508,11 @@ pub fn run<H: Host>(host: &mut H, back: &mut [u32]) {
     d.open_app(App::Welcome);
 
     while !d.quit {
+        let secs = host.uptime_ms() / 1000;
+        d.now = secs; // key presses below get this as their timestamp
         while let Some(ev) = host.poll_event() {
             d.handle(ev);
         }
-        let secs = host.uptime_ms() / 1000;
         if secs != d.last_sec {
             d.last_sec = secs;
             d.scene_dirty = true; // the clock (and the terminal cursor) changed

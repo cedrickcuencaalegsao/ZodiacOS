@@ -57,6 +57,43 @@ zodiac_prog_priv_start:
     int  0x80
 zodiac_prog_priv_end:
 
+// cat: open a file, copy it to stdout, close it
+.global zodiac_prog_cat_start
+.global zodiac_prog_cat_end
+zodiac_prog_cat_start:
+    mov  eax, 6             // open("/etc/zodiac/os.conf", O_RDONLY, 0)
+    lea  rdi, [rip + 2f]
+    xor  esi, esi
+    xor  edx, edx
+    int  0x80
+    test rax, rax
+    js   3f                 // negative = error: exit with it
+    mov  ebx, eax           // fd (rbx survives system calls)
+    sub  rsp, 256           // a buffer on the user stack
+4:  mov  eax, 8             // n = read(fd, buf, 256)
+    mov  edi, ebx
+    mov  rsi, rsp
+    mov  edx, 256
+    int  0x80
+    test rax, rax
+    jle  5f                 // 0 = end of file, negative = error
+    mov  rdx, rax           // write(1, buf, n)
+    mov  eax, 0
+    mov  edi, 1
+    mov  rsi, rsp
+    int  0x80
+    jmp  4b
+5:  mov  eax, 7             // close(fd)
+    mov  edi, ebx
+    int  0x80
+    xor  edi, edi
+    jmp  6f
+3:  mov  rdi, rax           // exit code = the error
+6:  mov  eax, 1             // exit
+    int  0x80
+2:  .asciz "/etc/zodiac/os.conf"
+zodiac_prog_cat_end:
+
 .text
 "#
 );
@@ -70,6 +107,8 @@ unsafe extern "C" {
     static zodiac_prog_kptr_end: u8;
     static zodiac_prog_priv_start: u8;
     static zodiac_prog_priv_end: u8;
+    static zodiac_prog_cat_start: u8;
+    static zodiac_prog_cat_end: u8;
 }
 
 fn blob(start: *const u8, end: *const u8) -> &'static [u8] {
@@ -78,10 +117,26 @@ fn blob(start: *const u8, end: *const u8) -> &'static [u8] {
 
 pub fn get(name: &str) -> Option<&'static [u8]> {
     match name {
-        "hello" => Some(blob(&raw const zodiac_prog_hello_start, &raw const zodiac_prog_hello_end)),
-        "read" => Some(blob(&raw const zodiac_prog_read_start, &raw const zodiac_prog_read_end)),
-        "kptr" => Some(blob(&raw const zodiac_prog_kptr_start, &raw const zodiac_prog_kptr_end)),
-        "priv" => Some(blob(&raw const zodiac_prog_priv_start, &raw const zodiac_prog_priv_end)),
+        "hello" => Some(blob(
+            &raw const zodiac_prog_hello_start,
+            &raw const zodiac_prog_hello_end,
+        )),
+        "read" => Some(blob(
+            &raw const zodiac_prog_read_start,
+            &raw const zodiac_prog_read_end,
+        )),
+        "kptr" => Some(blob(
+            &raw const zodiac_prog_kptr_start,
+            &raw const zodiac_prog_kptr_end,
+        )),
+        "priv" => Some(blob(
+            &raw const zodiac_prog_priv_start,
+            &raw const zodiac_prog_priv_end,
+        )),
+        "cat" => Some(blob(
+            &raw const zodiac_prog_cat_start,
+            &raw const zodiac_prog_cat_end,
+        )),
         _ => None,
     }
 }

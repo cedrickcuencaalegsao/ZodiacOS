@@ -42,7 +42,7 @@ dirs:
 
 # ---- Kernel (Rust), shared by every architecture ------------------------------
 $(KERNEL_LIB): $(KERNEL_SRC) kernel/Cargo.toml
-	@echo "[RUST] Building kernel (release, $(TARGET))..."
+	echo "[RUST] Building kernel (release, $(TARGET))..."
 	cd kernel && cargo +nightly build --release \
 		-Z build-std=core,compiler_builtins,alloc \
 		-Z build-std-features=compiler-builtins-mem \
@@ -66,8 +66,15 @@ DISK_IMG   := $(BUILD_DIR)/zodiacos.img
 DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.img
 
-# Must match KERNEL_SECTORS in bootloader/x86_64/boot.asm (768 sectors * 512 bytes)
-MAX_KERNEL_BYTES := 524288
+# ---- Kernel size, handed to the bootloader automatically ----------------------
+# The BIOS loads the kernel in CHUNK_SECTORS-sector reads into low memory at
+# 0x10000. That area ends where the BIOS data area starts (0x9FC00), which caps
+# the image at 1150 sectors; rounded down to whole chunks it is 1144 sectors.
+# boot.bin is assembled AFTER the kernel with -DKERNEL_SECTORS=<its real size>,
+# so nothing has to be edited by hand when the kernel grows.
+CHUNK_SECTORS      := 8
+MAX_KERNEL_SECTORS := 1144
+MAX_KERNEL_BYTES   := 585728
 
 # ---- Host screen size ---------------------------------------------------------
 # Asks macOS for the main screen size (in points). The size is handed to QEMU's
@@ -88,7 +95,7 @@ QEMU_DRIVES := \
 	-m 256M \
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
-	-display cocoa\
+	-display cocoa \
 	-rtc base=localtime \
 	-serial stdio \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
@@ -96,46 +103,59 @@ QEMU_DRIVES := \
 # To see a USB controller in `lspci`, add:  -device qemu-xhci -device usb-kbd
 
 all: $(DISK_IMG) $(DATA_IMG)
-	@echo ""
-	@echo "  Build complete! Disk image: $(DISK_IMG)"
-	@echo "  Run with:  make run     (screen: $(SCREEN_W)x$(SCREEN_H))"
-	@echo ""
-
-$(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) | dirs
-	@echo "[ASM]  Assembling Bootloader ($(ARCH))..."
-	nasm -f bin -I bootloader/$(ARCH)/ -o $@ $<
-	@test $$(wc -c < $@) -eq 512 || (echo "ERROR: Bootloader is not 512 bytes!" && exit 1)
-	@echo "       $$(wc -c < $@) bytes — OK"
-	@printf "       Boot signature: "; xxd -s 510 -l 2 $@
+	echo ""
+	echo "  Build complete! Disk image: $(DISK_IMG)"
+	echo "  Run with:  make run     (screen: $(SCREEN_W)x$(SCREEN_H))"
+	echo ""
 
 $(KERNEL_ELF): $(KERNEL_LIB) $(LINKER) | dirs
-	@echo "[LD]   Linking kernel ELF..."
+	echo "[LD]   Linking kernel ELF..."
 	$(LLD) -u _start -T $(LINKER) -o $@ $(KERNEL_LIB)
 
 $(KERNEL_BIN): $(KERNEL_ELF)
-	@echo "[OBJ]  Extracting flat binary..."
+	echo "[OBJ]  Extracting flat binary..."
 	$(OBJCOPY) -O binary $< $@
-	@echo "       $$(wc -c < $@) bytes (flat binary)"
-	@test $$(wc -c < $@) -le $(MAX_KERNEL_BYTES) || \
-		(echo "ERROR: kernel exceeds $(MAX_KERNEL_BYTES) bytes. Raise KERNEL_SECTORS in $(BOOT_ASM) and MAX_KERNEL_BYTES here." && exit 1)
+	echo "       $$(wc -c < $@) bytes (flat binary)"
+	test $$(wc -c < $@) -le $(MAX_KERNEL_BYTES) || \
+		(echo "ERROR: kernel is bigger than the $(MAX_KERNEL_BYTES)-byte real-mode load limit (0x9FC00)." && \
+		 echo "       Shrink it (opt-level, lto, strip, big static arrays) or load it above 1 MiB." && exit 1)
 
-$(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN)
-	@echo "[IMG]  Creating disk image..."
-	dd if=/dev/zero     of=$@ bs=1m  count=64 status=none
-	dd if=$(BOOT_BIN)   of=$@ bs=512 seek=0 conv=notrunc status=none
-	dd if=$(KERNEL_BIN) of=$@ bs=512 seek=1 conv=notrunc status=none
-	@echo "       Disk image ready: $@"
+# The bootloader is built after the kernel: it needs the kernel's size.
+$(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) $(KERNEL_BIN) | dirs
+	@sectors=$$(( ( $$(wc -c < $(KERNEL_BIN)) + 511 ) / 512 )); \
+	sectors=$$(( ( sectors + $(CHUNK_SECTORS) - 1 ) / $(CHUNK_SECTORS) * $(CHUNK_SECTORS) )); \
+	echo "[ASM]  Assembling Bootloader ($(ARCH)), loading $$sectors of $(MAX_KERNEL_SECTORS) sectors..."; \
+	nasm -f bin -I bootloader/$(ARCH)/ -DKERNEL_SECTORS=$$sectors -DCHUNK=$(CHUNK_SECTORS) -o $@ $<
+	@test $$(wc -c < $@) -eq 512 || (echo "ERROR: Bootloader is not 512 bytes!" && exit 1)
+	echo "       $$(wc -c < $@) bytes — OK"
+	@printf "       Boot signature: "; xxd -s 510 -l 2 $@
+
+INITRAMFS_DIR := initramfs
+INITRAMFS_IMG := $(BUILD_DIR)/initramfs.img
+INITRAMFS_LBA := 2048
+
+$(INITRAMFS_IMG): $(shell find $(INITRAMFS_DIR) -type f 2>/dev/null) scripts/mkinitramfs.py | dirs
+	echo "[INITRD] Packing $(INITRAMFS_DIR)/ ..."
+	python3 scripts/mkinitramfs.py $(INITRAMFS_DIR) $@
+
+$(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN) $(INITRAMFS_IMG)
+	echo "[IMG]  Creating disk image..."
+	dd if=/dev/zero        of=$@ bs=1m  count=64 status=none
+	dd if=$(BOOT_BIN)      of=$@ bs=512 seek=0 conv=notrunc status=none
+	dd if=$(KERNEL_BIN)    of=$@ bs=512 seek=1 conv=notrunc status=none
+	dd if=$(INITRAMFS_IMG) of=$@ bs=512 seek=$(INITRAMFS_LBA) conv=notrunc status=none
+	echo "       Disk image ready: $@"
 
 # Data disk (created once, never rebuilt)
 $(DATA_IMG):
-	@echo "[DATA] Creating 16 MB data disk..."
+	echo "[DATA] Creating 16 MB data disk..."
 	@mkdir -p $(DATA_DIR)
 	dd if=/dev/zero of=$@ bs=1m count=16 status=none
 
 # NOTE: the ISO holds the disk image as a file. It has no El Torito boot
 # record yet, so boot build/zodiacos.img itself (make run).
 _iso: $(DISK_IMG)
-	@echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
+	echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
 	@rm -rf $(ISO_ROOT)
 	@mkdir -p $(ISO_ROOT)
 	cp $(DISK_IMG) $(ISO_ROOT)/zodiacos.img
@@ -143,24 +163,24 @@ _iso: $(DISK_IMG)
 		-V ZODIACOS \
 		-o $(ISO_IMG) \
 		$(ISO_ROOT)
-	@echo ""
-	@echo "       ISO created successfully!"
-	@echo "       Version:      $(VERSION)"
-	@echo "       Architecture: $(ARCH)"
-	@echo "       Output:       $(ISO_IMG)"
-	@echo ""
+	echo ""
+	echo "       ISO created successfully!"
+	echo "       Version:      $(VERSION)"
+	echo "       Architecture: $(ARCH)"
+	echo "       Output:       $(ISO_IMG)"
+	echo ""
 
 run: $(DISK_IMG) $(DATA_IMG)
-	@echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display"
+	echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display"
 	$(QEMU) $(QEMU_DRIVES)
 
 # Stops at the first fault and logs CPU resets/interrupts instead of rebooting
 run-debug: $(DISK_IMG) $(DATA_IMG)
 	$(QEMU) $(QEMU_DRIVES) -d int,cpu_reset -no-reboot -D $(BUILD_DIR)/qemu.log
-	@echo "Log written to $(BUILD_DIR)/qemu.log"
+	echo "Log written to $(BUILD_DIR)/qemu.log"
 
 run-hvf:
-	@echo "run-hvf is only for ARCH=aarch64 (x86 guests can't use HVF on Apple Silicon)"
+	echo "run-hvf is only for ARCH=aarch64 (x86 guests can't use HVF on Apple Silicon)"
 
 endif
 
@@ -177,25 +197,25 @@ KERNEL_ELF := $(BUILD_DIR)/kernel-aarch64.elf
 QEMU_MACHINE := -M virt -m 256M -nographic
 
 all: $(KERNEL_ELF)
-	@echo ""
-	@echo "  Build complete! $(KERNEL_ELF)"
-	@echo "  Run with:  make ARCH=aarch64 run       (software emulation)"
-	@echo "         or: make ARCH=aarch64 run-hvf   (native speed on Apple Silicon)"
-	@echo "  Leave QEMU with Ctrl-A, then X"
-	@echo ""
+	echo ""
+	echo "  Build complete! $(KERNEL_ELF)"
+	echo "  Run with:  make ARCH=aarch64 run       (software emulation)"
+	echo "         or: make ARCH=aarch64 run-hvf   (native speed on Apple Silicon)"
+	echo "  Leave QEMU with Ctrl-A, then X"
+	echo ""
 
 $(BUILD_DIR)/%.o: $(AA64_DIR)/%.S | dirs
-	@echo "[AS]   $<"
+	echo "[AS]   $<"
 	$(CLANG) --target=aarch64-none-elf -c $< -o $@
 
 $(KERNEL_ELF): $(AA64_OBJS) $(KERNEL_LIB) $(AA64_LD) | dirs
-	@echo "[LD]   Linking AArch64 kernel..."
+	echo "[LD]   Linking AArch64 kernel..."
 	$(LLD) -T $(AA64_LD) -o $@ $(AA64_OBJS) $(KERNEL_LIB)
 
 # NOTE: the ISO is a container for the kernel ELF. It is not UEFI-bootable yet
 # (that needs the BOOTAA64.EFI stub), so run the ELF with QEMU instead.
 _iso: $(KERNEL_ELF)
-	@echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
+	echo "[ISO]  Creating ZodiacOS v$(VERSION) ISO for $(ARCH)..."
 	@rm -rf $(ISO_ROOT)
 	@mkdir -p $(ISO_ROOT)
 	cp $(KERNEL_ELF) $(ISO_ROOT)/kernel-aarch64.elf
@@ -211,13 +231,13 @@ _iso: $(KERNEL_ELF)
 		-V ZODIACOS \
 		-o $(ISO_IMG) \
 		$(ISO_ROOT)
-	@echo ""
-	@echo "       ISO created successfully!"
-	@echo "       Version:      $(VERSION)"
-	@echo "       Architecture: $(ARCH)"
-	@echo "       Output:       $(ISO_IMG)"
-	@echo "       Note:         not UEFI-bootable yet, see README.txt inside"
-	@echo ""
+	echo ""
+	echo "       ISO created successfully!"
+	echo "       Version:      $(VERSION)"
+	echo "       Architecture: $(ARCH)"
+	echo "       Output:       $(ISO_IMG)"
+	echo "       Note:         not UEFI-bootable yet, see README.txt inside"
+	echo ""
 
 run: $(KERNEL_ELF)
 	$(QEMU) $(QEMU_MACHINE) -cpu cortex-a72 -kernel $(KERNEL_ELF)
@@ -228,7 +248,7 @@ run-hvf: $(KERNEL_ELF)
 
 run-debug: $(KERNEL_ELF)
 	$(QEMU) $(QEMU_MACHINE) -cpu cortex-a72 -d int,guest_errors -no-reboot -D $(BUILD_DIR)/qemu.log -kernel $(KERNEL_ELF)
-	@echo "Log written to $(BUILD_DIR)/qemu.log"
+	echo "Log written to $(BUILD_DIR)/qemu.log"
 
 endif
 
@@ -246,7 +266,7 @@ iso-all: iso-x86_64 iso-aarch64
 iso: iso-$(ARCH)
 
 iso-inspect: iso
-	@echo "[ISO]  Inspecting $(ISO_IMG)..."
+	echo "[ISO]  Inspecting $(ISO_IMG)..."
 	xorriso -indev $(ISO_IMG) -report_el_torito as_mkisofs
 
 # ---- Watch mode: rebuild and relaunch QEMU on every save ----------------------
@@ -256,11 +276,11 @@ watch:
 
 # ---- Clean ------------------------------------------------------------------
 clean:
-	@echo "[CLN]  Cleaning..."
+	echo "[CLN]  Cleaning..."
 	rm -rf $(BUILD_DIR)
 	cd kernel && cargo clean && cd ..
 	cd userspace/desktop && cargo clean && cd ../../
-	@echo "       Done. (data disk in disk/ was kept)"
+	echo "       Done. (data disk in disk/ was kept)"
 
 # Wipes the x86 data disk too (all files you saved inside ZodiacOS)
 clean-disk:

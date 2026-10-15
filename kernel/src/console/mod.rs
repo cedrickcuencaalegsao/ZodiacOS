@@ -1,5 +1,6 @@
 pub mod desktop_host;
 pub mod fbcon;
+pub mod fscmd;
 pub mod hwcmd;
 pub mod login;
 pub mod memcmd;
