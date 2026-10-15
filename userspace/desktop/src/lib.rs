@@ -1,12 +1,15 @@
 //! ZodiacOS desktop. A `no_std` library like `login-manager`: the kernel links it and
 //! calls `run`. The desktop never touches hardware; the kernel provides a `Host`.
 #![no_std]
+extern crate alloc;
 
 mod apps;
 mod desktop;
 mod dock;
 mod gfx;
+mod memfs;
 mod panel;
+mod term;
 mod wallpaper;
 
 pub use desktop::run;

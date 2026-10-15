@@ -3,8 +3,11 @@ use core::cell::UnsafeCell;
 
 pub const KERNEL_CS: u16 = 0x08;
 pub const KERNEL_DS: u16 = 0x10;
+#[allow(dead_code)]
 pub const USER_DS: u16 = 0x18 | 3;
+#[allow(dead_code)]
 pub const USER_CS: u16 = 0x20 | 3;
+#[allow(dead_code)]
 const TSS_SELECTOR: u16 = 0x28;
 
 const IST_STACK_SIZE: usize = 16 * 1024;

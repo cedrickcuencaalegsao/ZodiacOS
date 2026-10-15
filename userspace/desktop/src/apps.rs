@@ -1,5 +1,6 @@
 //! The built-in apps and what they draw inside their windows.
 use crate::gfx::{text_width, Gfx};
+use crate::term::TermState;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum App {
@@ -49,10 +50,20 @@ impl App {
 }
 
 /// Draws the app's content into the area below the title bar.
-pub fn draw_content(g: &mut Gfx, app: App, x: i32, y: i32, w: i32, h: i32, secs: u64) {
+/// `term` is the Terminal window's state (shell + screen), owned by the desktop.
+pub fn draw_content(
+    g: &mut Gfx,
+    app: App,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    secs: u64,
+    term: &mut TermState,
+) {
     match app {
         App::Welcome => welcome(g, x, y, w),
-        App::Terminal => terminal(g, x, y, w, h, secs),
+        App::Terminal => term.draw(g, x, y, w, h, secs),
         App::Files => files(g, x, y, w, h),
         App::Settings => settings(g, x, y, w),
     }
@@ -75,20 +86,6 @@ fn welcome(g: &mut Gfx, x: i32, y: i32, w: i32) {
     g.ring(cx, cy, 38, 0x9a6bff, 200);
     g.ring(cx, cy, 39, 0x9a6bff, 80);
     g.circle(cx, cy, 13, 0xB9A6FF, 235);
-}
-
-fn terminal(g: &mut Gfx, x: i32, y: i32, w: i32, h: i32, secs: u64) {
-    g.round_rect(x + 10, y + 4, w - 20, h - 14, 8, 0x0b0b12, 0x0b0b12, 255);
-    let lines = ["ZodiacOS 0.1.0 (x86_64)", "Type 'help' for a list of commands.", ""];
-    for (i, l) in lines.iter().enumerate() {
-        g.text(x + 24, y + 16 + i as i32 * 18, l, 0x9a9ab8);
-    }
-    let py = y + 16 + 3 * 18;
-    let prompt = "zodiac@os:~$ ";
-    g.text(x + 24, py, prompt, 0x6CFF9C);
-    if secs % 2 == 0 {
-        g.rect(x + 24 + text_width(prompt, 1), py, 8, 16, 0x6CFF9C, 255);
-    }
 }
 
 fn files(g: &mut Gfx, x: i32, y: i32, w: i32, h: i32) {

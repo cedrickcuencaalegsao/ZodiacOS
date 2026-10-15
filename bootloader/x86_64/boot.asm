@@ -3,7 +3,9 @@
 ; then long_mode.asm switches to 64-bit, copies the kernel to 1 MiB and jumps to it.
 ;
 ; Files:    boot.asm (this one), gdt.asm, long_mode.asm
-; Assemble: nasm -f bin -I bootloader/x86_64/ -o build/boot.bin bootloader/x86_64/boot.asm
+; Assemble: the Makefile does it and passes the kernel size in, so nothing here
+;           has to be edited when the kernel grows:
+;             nasm -f bin -I bootloader/x86_64/ -DKERNEL_SECTORS=<n> -DCHUNK=<n> -o build/boot.bin bootloader/x86_64/boot.asm
 
 [bits 16]
 [org 0x7C00]
@@ -11,11 +13,26 @@
 LOAD_ADDR       equ 0x10000     ; the BIOS can only read below 1 MiB, so the image is loaded here...
 LOAD_SEG        equ 0x1000      ; LOAD_ADDR >> 4
 KERNEL_ADDR     equ 0x100000    ; ...and copied here (the link address in kernel/linker.ld)
-CHUNK           equ 32          ; sectors per BIOS read (16 KB)
-; The image is loaded at LOAD_ADDR, so LOAD_ADDR + KERNEL_SECTORS * 512 must stay
-; below the BIOS data area at 0x9FC00. 1120 sectors ends at 0x9C000.
-; Keep it a multiple of CHUNK and in sync with MAX_KERNEL_BYTES in the Makefile.
-KERNEL_SECTORS  equ 1120        ; 560 KB image (35 chunks of 32 sectors)
+LOAD_LIMIT      equ 0x9FC00     ; start of the BIOS data area: the image must end below this
+
+; Both come from the Makefile (-D). The defaults only apply if you assemble by hand.
+%ifndef CHUNK
+CHUNK           equ 8           ; sectors per BIOS read (4 KB)
+%endif
+%ifndef KERNEL_SECTORS
+KERNEL_SECTORS  equ 1144        ; image size in sectors, a multiple of CHUNK
+%endif
+
+%if KERNEL_SECTORS % CHUNK != 0
+%error KERNEL_SECTORS must be a multiple of CHUNK
+%endif
+%if KERNEL_SECTORS / CHUNK > 255
+%error too many chunks for the 8-bit counter, raise CHUNK
+%endif
+%if LOAD_ADDR + KERNEL_SECTORS * 512 > LOAD_LIMIT
+%error the kernel image does not fit below the BIOS data area at 0x9FC00
+%endif
+
 STACK_TOP       equ 0x90000
 
 MEMMAP_ADDR     equ 0x4000      ; BIOS memory map: u32 count, 24-byte entries from +16
