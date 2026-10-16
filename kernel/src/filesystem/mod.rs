@@ -9,7 +9,7 @@ pub mod ramfs;
 pub mod vfs;
 pub mod zdfs; // the old flat disk format; stays compiled until FAT32 replaces it
 
-pub use inode::{DirEntry, FileType, Inode, Stat};
+pub use inode::{FileType,Stat};
 
 use crate::base::error::Error;
 use crate::{log_info, log_warn};

@@ -280,6 +280,8 @@ clean:
 	rm -rf $(BUILD_DIR)
 	cd kernel && cargo clean && cd ..
 	cd userspace/desktop && cargo clean && cd ../../
+	cd abi && cargo clean && cd ..
+	cd zpm && cargo clean && cd ..
 	echo "       Done. (data disk in disk/ was kept)"
 
 # Wipes the x86 data disk too (all files you saved inside ZodiacOS)

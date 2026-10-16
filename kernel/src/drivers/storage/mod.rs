@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 pub mod ata;
 
 use crate::base::error::Result;

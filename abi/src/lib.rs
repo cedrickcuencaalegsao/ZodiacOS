@@ -1,5 +1,3 @@
-//! Shared types between the kernel, the shell and the desktop.
-//! Keep this crate tiny, `no_std`, and dependency-free.
 #![no_std]
 extern crate alloc;
 

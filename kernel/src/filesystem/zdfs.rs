@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::{ata, time, user};
 
 pub const DRIVE: u8 = 1; // hdb = the data disk

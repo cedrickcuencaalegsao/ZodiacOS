@@ -115,7 +115,7 @@ fn pop() -> Option<u8> {
 
 /// Called from the IRQ1 handler.
 pub fn handle_irq() {
-    let sc = unsafe { inb(0x60) };
+    let sc = inb(0x60) ;
     if let Some(c) = decode(sc) {
         push(c);
     }
@@ -150,18 +150,18 @@ pub fn wait_char() -> u8 {
 
 /// Reads the hardware directly, for when interrupts are off (the panic screen).
 pub fn poll_char() -> Option<u8> {
-    if unsafe { inb(0x64) } & 1 == 0 {
+    if  inb(0x64)  & 1 == 0 {
         return None;
     }
-    decode(unsafe { inb(0x60) })
+    decode(inb(0x60) )
 }
 
 /// Drops anything the controller buffered before interrupts were enabled.
 pub fn flush() {
     for _ in 0..32 {
-        if unsafe { inb(0x64) } & 1 == 0 {
+        if inb(0x64)  & 1 == 0 {
             break;
         }
-        let _ = unsafe { inb(0x60) };
+        let _ = inb(0x60) ;
     }
 }

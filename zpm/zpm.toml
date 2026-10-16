@@ -1,0 +1,24 @@
+# ZPM configuration. Copy next to where you run zpm, or pass --config / set ZPM_CONFIG.
+
+# Everything ZPM installs goes under <root>/system/. Use a scratch directory on the host.
+root = "./zodiac-root"
+
+# What packages are checked against. architecture is the TARGET system, not your Mac.
+os_version = "0.1.0"
+architecture = "x86_64"
+
+# "any" | "same-major" | "patch-only"
+upgrade_policy = "any"
+
+max_download_bytes = 268435456
+max_unpacked_bytes = 1073741824
+max_files_per_package = 50000
+
+[[repositories]]
+name = "dev"
+url = "http://127.0.0.1:8080"
+
+# Key id -> hex ed25519 public key (64 hex chars). Packages only install if their
+# manifest is signed by one of these.
+[trusted_keys]
+# official = "<64 hex characters>"

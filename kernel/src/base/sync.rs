@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering::{Acquire, Relaxed, Release}};
@@ -189,4 +190,4 @@ mod blocking {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub use blocking::{IrqGuard, IrqSpinLock, Mutex, MutexGuard};
+pub use blocking::{IrqSpinLock, Mutex};

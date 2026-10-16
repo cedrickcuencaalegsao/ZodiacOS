@@ -83,27 +83,27 @@ pub fn kernel_main() -> ! {
 
     // Login -> desktop, repeated until the desktop can't start. Logging out of the
     // desktop returns to the login screen; a desktop error drops to the terminal.
-    loop {
-        log_info!("starting login");
-        let session = console::login::run();
-        log_info!("user '{}' logged in (uid {})", session.name, session.uid);
+    // loop {
+    //     log_info!("starting login");
+    //     let session = console::login::run();
+    //     log_info!("user '{}' logged in (uid {})", session.name, session.uid);
 
-        // ADAPT: record the current user so permissions/terminal can use it
-        // user::set_current(session.uid, session.gid);
+    //     // ADAPT: record the current user so permissions/terminal can use it
+    //     // user::set_current(session.uid, session.gid);
 
-        log_info!("starting desktop");
-        match console::desktop_host::run() {
-            Ok(()) => {
-                log_info!("user logged out");
-                vga::clear();
-                continue; // back to the login screen
-            }
-            Err(e) => {
-                log_error!("desktop unavailable: {}", e);
-                break; // fall through to the terminal
-            }
-        }
-    }
+    //     log_info!("starting desktop");
+    //     match console::desktop_host::run() {
+    //         Ok(()) => {
+    //             log_info!("user logged out");
+    //             vga::clear();
+    //             continue; // back to the login screen
+    //         }
+    //         Err(e) => {
+    //             log_error!("desktop unavailable: {}", e);
+    //             break; // fall through to the terminal
+    //         }
+    //     }
+    // }
 
     vga::clear();
     kprintln!("ZodiacOS 0.1.0");

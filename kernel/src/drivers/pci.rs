@@ -37,17 +37,13 @@ fn address(bus: u8, dev: u8, func: u8, offset: u8) -> u32 {
 }
 
 pub fn read32(bus: u8, dev: u8, func: u8, offset: u8) -> u32 {
-    unsafe {
-        outl(CONFIG_ADDRESS, address(bus, dev, func, offset));
-        inl(CONFIG_DATA)
-    }
+    outl(CONFIG_ADDRESS, address(bus, dev, func, offset));
+    inl(CONFIG_DATA)
 }
 
 pub fn write32(bus: u8, dev: u8, func: u8, offset: u8, value: u32) {
-    unsafe {
-        outl(CONFIG_ADDRESS, address(bus, dev, func, offset));
-        outl(CONFIG_DATA, value);
-    }
+    outl(CONFIG_ADDRESS, address(bus, dev, func, offset));
+    outl(CONFIG_DATA, value);
 }
 
 fn read8(bus: u8, dev: u8, func: u8, offset: u8) -> u8 {
@@ -87,7 +83,11 @@ fn scan_bus(bus: u8, out: &mut Vec<PciDevice>) {
         if read32(bus, dev, 0, 0x00) as u16 == 0xFFFF {
             continue;
         }
-        let functions = if read8(bus, dev, 0, 0x0E) & 0x80 != 0 { 8 } else { 1 };
+        let functions = if read8(bus, dev, 0, 0x0E) & 0x80 != 0 {
+            8
+        } else {
+            1
+        };
         for func in 0..functions {
             scan_function(bus, dev, func, out);
         }
@@ -108,13 +108,21 @@ pub fn devices() -> Vec<PciDevice> {
 }
 
 pub fn find(vendor: u16, device: u16) -> Option<PciDevice> {
-    DEVICES.lock().iter().copied().find(|d| d.vendor == vendor && d.device == device)
+    DEVICES
+        .lock()
+        .iter()
+        .copied()
+        .find(|d| d.vendor == vendor && d.device == device)
 }
 
 /// First device of a class, for drivers that look for "any AHCI controller" etc.
 #[allow(dead_code)]
 pub fn find_class(class: u8, subclass: u8) -> Option<PciDevice> {
-    DEVICES.lock().iter().copied().find(|d| d.class == class && d.subclass == subclass)
+    DEVICES
+        .lock()
+        .iter()
+        .copied()
+        .find(|d| d.class == class && d.subclass == subclass)
 }
 
 impl PciDevice {
@@ -125,7 +133,9 @@ impl PciDevice {
             return Bar::None;
         }
         if v & 1 == 1 {
-            return Bar::Io { port: (v & !0x3) as u16 };
+            return Bar::Io {
+                port: (v & !0x3) as u16,
+            };
         }
         let low = (v & !0xF) as u64;
         let base = if (v >> 1) & 3 == 2 {
@@ -134,7 +144,10 @@ impl PciDevice {
         } else {
             low
         };
-        Bar::Memory { base, prefetchable: v & 0x8 != 0 }
+        Bar::Memory {
+            base,
+            prefetchable: v & 0x8 != 0,
+        }
     }
 
     /// Turns on I/O decoding, memory decoding and bus mastering.
