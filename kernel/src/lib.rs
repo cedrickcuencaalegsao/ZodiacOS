@@ -62,51 +62,67 @@ static DESKTOP_ELF: &[u8] = include_bytes!("../../target/x86_64-zodiac-user/rele
 
 /// Architecture-neutral boot sequence (x86_64 for now; AArch64 has its own
 /// `rust_entry` in arch/aarch64/mod.rs until the shared pieces are ported).
-#[cfg(target_arch = "x86_64")]
+const INIT_STEPS: usize = 6; // memory, drivers, fs, interrupts, scheduler, process
+
 pub fn kernel_main() -> ! {
-    memory::init();
-    drivers::init(); // PCI, framebuffer, block devices
-    filesystem::init(); // root ramfs, /dev, /proc, initramfs
+    if let Err(e) = memory::init() {
+        panic!("memory init failed: {}", e);
+    }
+    drivers::init(); // framebuffer comes up here
+    console::splash::begin(INIT_STEPS, 2); // memory + drivers already done
+    console::splash::hold(1500);
+    if let Err(e) = filesystem::init() {
+        console::splash::abort();
+        log_error!("filesystem init failed: {:?}", e);
+        panic!("filesystem not installed correctly");
+    }
+    console::splash::step(); // 3
+    console::splash::hold(500);
     interrupts::init();
-    scheduler::init(); // the boot thread becomes task 0, the timer drives the scheduler
-    process::init(); // idle task and the system call gate
+    console::splash::step(); // 4
+    console::splash::hold(500);
+    scheduler::init();
+    console::splash::step(); // 5
+    console::splash::hold(500);
+    process::init();
+    console::splash::step(); // 6
 
     interrupts::enable();
+    console::splash::hold(3000);
+    console::splash::finish(); // fill to 100%, flash, fade, clear
     log_info!("ZodiacOS kernel started");
 
-    vga::disable_cursor();
-    vga::clear();
-    console::splash::run(3000);
-    log_info!("splash finished");
-
-    vga::clear();
-
-    // Login -> desktop, repeated until the desktop can't start. Logging out of the
-    // desktop returns to the login screen; a desktop error drops to the terminal.
-    // loop {
-    //     log_info!("starting login");
-    //     let session = console::login::run();
-    //     log_info!("user '{}' logged in (uid {})", session.name, session.uid);
-
-    //     // ADAPT: record the current user so permissions/terminal can use it
-    //     // user::set_current(session.uid, session.gid);
-
-    //     log_info!("starting desktop");
-    //     match console::desktop_host::run() {
-    //         Ok(()) => {
-    //             log_info!("user logged out");
-    //             vga::clear();
-    //             continue; // back to the login screen
-    //         }
-    //         Err(e) => {
-    //             log_error!("desktop unavailable: {}", e);
-    //             break; // fall through to the terminal
-    //         }
-    //     }
-    // }
-
-    vga::clear();
     kprintln!("ZodiacOS 0.1.0");
     kprintln!("Type 'help' for a list of commands.\n");
     console::terminal::run();
 }
+
+// Login -> desktop, repeated until the desktop can't start. Logging out of the
+// desktop returns to the login screen; a desktop error drops to the terminal.
+// loop {
+//     log_info!("starting login");
+//     let session = console::login::run();
+//     log_info!("user '{}' logged in (uid {})", session.name, session.uid);
+
+//     // ADAPT: record the current user so permissions/terminal can use it
+//     // user::set_current(session.uid, session.gid);
+
+//     log_info!("starting desktop");
+//     match console::desktop_host::run() {
+//         Ok(()) => {
+//             log_info!("user logged out");
+//             vga::clear();
+//             continue; // back to the login screen
+//         }
+//         Err(e) => {
+//             log_error!("desktop unavailable: {}", e);
+//             break; // fall through to the terminal
+//         }
+//     }
+// }
+
+//     vga::clear();
+//     kprintln!("ZodiacOS 0.1.0");
+//     kprintln!("Type 'help' for a list of commands.\n");
+//     console::terminal::run();
+// }

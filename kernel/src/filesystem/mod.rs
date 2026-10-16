@@ -61,27 +61,33 @@ pub fn home_dir() -> String {
     }
 }
 
-/// Builds the root filesystem: ramfs at "/", the standard directories, /dev and
-/// /proc, and whatever the initramfs on the boot disk contains.
-pub fn init() {
+/// Builds the root filesystem. Returns an error if any required step fails.
+pub fn init() -> Result<(), Error> {
     let root = ramfs::new_root();
-    mount::mount("/", "ramfs", "rootfs", root).expect("filesystem: cannot mount /");
+    mount::mount("/", "ramfs", "rootfs", root)?;
 
     for &(path, mode) in HIERARCHY {
         match vfs::create(path, FileType::Directory, mode) {
             Ok(_) | Err(Error::AlreadyExists) => {}
-            Err(e) => log_warn!("filesystem: cannot create {}: {}", path, e),
+            Err(e) => {
+                log_warn!("filesystem: cannot create {}: {}", path, e);
+                return Err(e);
+            }
         }
     }
 
-    let _ = mount::mount("/dev", "devfs", "devfs", devfs::new_root());
-    let _ = mount::mount("/proc", "procfs", "procfs", procfs::new_root());
+    mount::mount("/dev", "devfs", "devfs", devfs::new_root())?;
+    mount::mount("/proc", "procfs", "procfs", procfs::new_root())?;
 
     match initramfs::load() {
         Ok(count) => log_info!("initramfs: {} entries unpacked", count),
-        Err(e) => log_warn!("initramfs: {}", e),
+        Err(e) => {
+            log_warn!("initramfs: {}", e);
+            return Err(e);
+        }
     }
 
     // the boot thread (the shell) starts in its home directory
     let _ = file::chdir("/root");
+    Ok(())
 }
