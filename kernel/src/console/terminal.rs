@@ -1,9 +1,47 @@
-use crate::console::{fscmd, hwcmd, memcmd, taskcmd};
-use crate::legacy::zpm;
+use crate::console::{fscmd, hwcmd, memcmd, taskcmd, zpm_cmd};
+use crate::filesystem::{self, file};
 use crate::{arch, fs, interrupts, keyboard, user, vga};
 use crate::{kassert_eq, kprint, kprintln};
-use crate::filesystem::{self, file};
 use alloc::{format, string::String};
+use core::fmt;
+
+use zpm_core::{Package, PackageKind, PackageSpace, Registry, Version};
+
+const MB: u64 = 1024 * 1024;
+
+pub static ZPM: spin::Mutex<Registry<128>> = spin::Mutex::new(Registry::new(PackageSpace::new(
+    64 * MB,
+    16 * MB,
+    4 * MB,
+    16 * MB,
+)));
+
+pub static CATALOG: spin::Mutex<Registry<16>> = spin::Mutex::new(Registry::new(PackageSpace::new(
+    64 * MB,
+    16 * MB,
+    4 * MB,
+    16 * MB,
+)));
+
+fn ensure_catalog() {
+    let mut cat = CATALOG.lock();
+    if cat.iter().next().is_some() {
+        return;
+    }
+    if let Some(hello) = Package::new("hello", Version::new(0, 1, 0), PackageKind::App) {
+        let _ = cat.install(hello);
+    }
+}
+
+/// Sends `write!`/`writeln!` output to the screen.
+struct ConsoleWriter;
+
+impl fmt::Write for ConsoleWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        kprint!("{}", s);
+        Ok(())
+    }
+}
 
 pub fn run() -> ! {
     let mut buf = [0u8; 128];
@@ -108,7 +146,23 @@ fn execute(line: &str) {
             arch::sleep_ms(800);
             arch::shutdown();
         }
-        "zpm" => zpm::run(args),
+
+        // ---- Package manager ----
+        "zpm" => {
+            let rest = line.strip_prefix("zpm").unwrap_or("");
+            ensure_catalog();
+            zpm_cmd::run(rest, &mut *ZPM.lock(), &*CATALOG.lock(), &mut ConsoleWriter);
+        }
+        "hello" => {
+            let rest = line.strip_prefix("hello").unwrap_or("").trim();
+            let installed = ZPM.lock().get("hello").is_some();
+            if !installed {
+                kprintln!("hello: not installed (run: zpm install hello)");
+            } else {
+                let name = if rest.is_empty() { "world" } else { rest };
+                kprintln!("Hello, {}! Greetings from ZodiacOS.", name);
+            }
+        }
 
         // ---- Drives and files ----
         // ls, cd, pwd, cat, write, rm, mkdir, touch, rmdir, stat, mount, lsblk
@@ -170,7 +224,7 @@ fn execute(line: &str) {
             },
             Some("bp") => unsafe { core::arch::asm!("int3") },
             Some("stack") => taskcmd::overflow_test(),
-            _ => kprintln!("usage: crash <panic|assert|ud|pf|div|bp>"),
+            _ => kprintln!("usage: crash <panic|assert|ud|pf|div|null|write|bp|stack>"),
         },
         "meminfo" | "memmap" | "vmem" | "memtest" | "vmtest" => memcmd::run(parts[0], args),
         "lspci" | "display" => hwcmd::run(parts[0]),
@@ -178,12 +232,8 @@ fn execute(line: &str) {
         "ls" | "cd" | "pwd" | "cat" | "mkdir" | "touch" | "rm" | "rmdir" | "write" | "stat"
         | "mount" | "lsblk" => fscmd::run(parts[0], args),
 
-        other => {
-            // Installed packages work as commands
-            if !zpm::launch(other, args) {
-                kprintln!("{}: command not found (try 'help')", other);
-            }
-        }
+        // Installed packages can't be launched yet (zpm_core has no launcher).
+        other => kprintln!("{}: command not found (try 'help')", other),
     }
 }
 
@@ -243,12 +293,12 @@ fn help() {
     help_line("about", "", "show OS version");
     help_line("reboot", "", "restart the machine (alias: restart)");
     help_line("shutdown", "", "power off (alias: poweroff)");
-    help_line("zpm", "<command>", "package manager (run 'zpm' for usage)");
+    help_line("zpm", "list", "package manager (run 'zpm' for usage)");
     help_line("uptime", "", "time since boot");
     help_line("sleep", "<ms>", "wait using the timer interrupt");
     help_line(
         "crash",
-        "<panic|assert|ud|pf|div|bp>",
+        "<panic|assert|ud|pf|div|null|write|bp|stack>",
         "trigger a test crash",
     );
 

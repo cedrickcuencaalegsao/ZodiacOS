@@ -135,6 +135,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+
+[[package]]
 name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -180,5 +186,11 @@ version = "0.1.1"
 dependencies = [
  "login-manager",
  "sha2",
+ "spin",
  "zodiac-desktop",
+ "zpm-core",
 ]
+
+[[package]]
+name = "zpm-core"
+version = "0.1.0"
