@@ -1,5 +1,5 @@
-use core::fmt;
 use crate::base::error::error_enum::Error;
+use core::fmt;
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -22,6 +22,8 @@ impl fmt::Display for Error {
             Error::BadAddress => "bad address",
             Error::InvalidExecutable => "invalid executable format",
             Error::TooManyFiles => "too many open files in system",
+            Error::TimeOut => "timed out",
+            Error::Unreachable => "not route to host",
         })
     }
 }

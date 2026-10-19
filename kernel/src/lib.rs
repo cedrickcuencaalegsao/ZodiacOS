@@ -33,6 +33,8 @@ mod process;
 mod scheduler;
 #[cfg(target_arch = "x86_64")]
 mod vga;
+#[cfg(target_arch = "x86_64")]
+mod network;
 
 // ---- Transition aliases: old module paths keep working while files migrate ----
 #[cfg(target_arch = "x86_64")]
@@ -58,7 +60,7 @@ pub(crate) use {
 /// dead-code warning is silenced until `process::spawn_elf` is wired up.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-static DESKTOP_ELF: &[u8] = include_bytes!("../../target/x86_64-zodiac-user/release/desktop");
+// static DESKTOP_ELF: &[u8] = include_bytes!("../../target/x86_64-zodiac-user/release/desktop");
 
 /// Architecture-neutral boot sequence (x86_64 for now; AArch64 has its own
 /// `rust_entry` in arch/aarch64/mod.rs until the shared pieces are ported).

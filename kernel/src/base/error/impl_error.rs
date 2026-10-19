@@ -21,6 +21,8 @@ impl Error {
             Error::BadAddress => 14,
             Error::InvalidExecutable => 85,
             Error::TooManyFiles => 24,
+            Error::TimeOut => 110,
+            Error::Unreachable => 113,
         }
     }
 }

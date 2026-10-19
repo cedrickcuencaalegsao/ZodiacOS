@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use core::sync::atomic::AtomicBool;
 
 // Register new packages here: 1) add a `pub mod`, 2) add it to ALL.

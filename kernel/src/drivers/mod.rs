@@ -4,10 +4,11 @@ pub mod bochs_vga;
 pub mod framebuffer;
 pub mod keyboard; // PS/2
 pub mod mouse;
+pub mod network; // e1000 NIC
 pub mod pci;
 pub mod rtc; // CMOS clock
 pub mod serial; // 16550 on x86, PL011 on AArch64 later
-pub mod storage; // PS/2
+pub mod storage;
 
 /// Used when the card reports no preferred size.
 const FALLBACK_WIDTH: u16 = 1920;
@@ -27,6 +28,7 @@ pub fn init() {
     storage::init();
     let devices = pci::init();
     log_info!("pci: {} devices", devices);
+    probe_pci_drivers();
 
     // Ask the display card for its preferred size (set from the host screen by the Makefile).
     let (width, height) = match bochs_vga::preferred_mode() {
@@ -54,5 +56,39 @@ pub fn init() {
     match framebuffer::init(width, height) {
         Ok(()) => log_info!("display: {}x{} framebuffer", width, height),
         Err(e) => log_warn!("display: {}, staying in VGA text mode", e),
+    }
+}
+
+use pci::PciDevice;
+
+pub struct PciDriver {
+    pub name: &'static str,
+    pub matches: fn(&PciDevice) -> bool,
+    pub probe: fn(&PciDevice) -> crate::base::error::Result<()>,
+}
+
+static PCI_DRIVERS: &[PciDriver] = &[PciDriver {
+    name: "e1000",
+    matches: network::e1000::matches,
+    probe: network::e1000::probe,
+}];
+
+fn probe_pci_drivers() {
+    for dev in pci::devices() {
+        for drv in PCI_DRIVERS {
+            if (drv.matches)(&dev) {
+                log_info!(
+                    "pci: {:02x}:{:02x}.{} -> {}",
+                    dev.bus,
+                    dev.dev,
+                    dev.func,
+                    drv.name
+                );
+                if let Err(e) = (drv.probe)(&dev) {
+                    log_warn!("{}: probe failed: {:?}", drv.name, e);
+                }
+                break;
+            }
+        }
     }
 }

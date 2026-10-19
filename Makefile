@@ -93,6 +93,7 @@ SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m 256M \
+	-nic user,model=e1000\
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
 	-display cocoa \

@@ -19,4 +19,6 @@ pub enum Error {
     BadAddress,
     InvalidExecutable,
     TooManyFiles,
+    TimeOut,
+    Unreachable,
 }

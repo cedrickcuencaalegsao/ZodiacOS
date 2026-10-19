@@ -1,3 +1,4 @@
+use crate::console::netcmd;
 use crate::console::{fscmd, hwcmd, memcmd, taskcmd, zpm_cmd};
 use crate::filesystem::{self, file};
 use crate::{arch, fs, interrupts, keyboard, user, vga};
@@ -231,6 +232,7 @@ fn execute(line: &str) {
         "ps" | "threads" | "syncdemo" | "userdemo" => taskcmd::run(parts[0], args),
         "ls" | "cd" | "pwd" | "cat" | "mkdir" | "touch" | "rm" | "rmdir" | "write" | "stat"
         | "mount" | "lsblk" => fscmd::run(parts[0], args),
+        "ifconfig" | "ping" | "arp" | "wifi" => netcmd::run(parts[0], args),
 
         // Installed packages can't be launched yet (zpm_core has no launcher).
         other => kprintln!("{}: command not found (try 'help')", other),
@@ -334,6 +336,16 @@ fn help() {
     help_line("threads", "", "three CPU-bound threads sharing the CPU");
     help_line("syncdemo", "", "lost updates vs atomics vs a mutex");
     help_line("userdemo", "<hello|read|kptr|priv>", "run a ring 3 program");
+
+    help_heading("Network:");
+    help_line(
+        "ifconfig",
+        "[set <ip> <mask> <gw>]",
+        "show interfaces or set the address",
+    );
+    help_line("ping", "<a.b.c.d>", "send ICMP echo requests");
+    help_line("arp", "", "show the ARP table");
+    help_line("wifi", "[scan|connect|selftest]", "WiFi control");
 
     vga::set_color(HELP_DESC);
     kprintln!("Installed packages can be run by name.");

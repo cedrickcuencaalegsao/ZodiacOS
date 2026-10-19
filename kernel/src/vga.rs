@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::arch::outb;
 use crate::console::fbcon;
 use core::fmt;
@@ -184,8 +185,10 @@ impl fmt::Write for Writer {
 #[macro_export]
 macro_rules! kprint {
     ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let _ = write!($crate::vga::Writer, $($arg)*);
+        let _ = ::core::fmt::Write::write_fmt(
+            &mut $crate::vga::Writer,
+            format_args!($($arg)*),
+        );
     }};
 }
 
