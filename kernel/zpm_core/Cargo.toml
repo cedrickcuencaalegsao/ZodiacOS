@@ -3,12 +3,12 @@ name = "zpm_core"
 version = "0.1.0"
 edition = "2024"
 
-[feature]
+[features]
 default = []
 std = ["dep:semver"]
 
 [dependencies]
-semver = { version = "1", optional = true}
+semver = { version = "1", optional = true }
 
 [lib]
 test  = false
