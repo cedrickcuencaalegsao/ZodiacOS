@@ -1,8 +1,12 @@
-use crate::{kassert, paging, pmm};
+use crate::{paging, pmm};
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
+use core::sync::atomic::{
+    AtomicBool, AtomicUsize,
+    Ordering::{Acquire, Relaxed, Release},
+};
+use shared::kassert;
 
 pub const HEAP_START: u64 = paging::HEAP_START;
 pub const HEAP_SIZE: usize = 32 * 1024 * 1024;
@@ -106,7 +110,11 @@ impl KernelHeap {
     }
 
     fn lock(&self) {
-        while self.locked.compare_exchange_weak(false, true, Acquire, Relaxed).is_err() {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Acquire, Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
     }
@@ -158,8 +166,13 @@ pub fn init() {
     let pml4 = paging::kernel_pml4();
     for page in 0..(HEAP_SIZE / 4096) as u64 {
         let frame = pmm::alloc_frame().expect("heap: out of physical memory");
-        paging::map_page(pml4, HEAP_START + page * 4096, frame, paging::WRITABLE | paging::NX)
-            .expect("heap: cannot map page");
+        paging::map_page(
+            pml4,
+            HEAP_START + page * 4096,
+            frame,
+            paging::WRITABLE | paging::NX,
+        )
+        .expect("heap: cannot map page");
     }
     ALLOCATOR.lock();
     unsafe { (*ALLOCATOR.heap.get()).insert(HEAP_START as usize, HEAP_SIZE) };

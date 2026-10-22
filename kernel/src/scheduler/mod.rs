@@ -2,11 +2,11 @@ pub mod policy;
 pub mod run_queue;
 
 use crate::base::sync::IrqSpinLock;
-use crate::kassert;
 use crate::process::context::zodiac_switch;
 use crate::process::task::{Entry, State, Task};
 use crate::{arch, interrupts, paging};
 use run_queue::RunQueue;
+use shared::kassert;
 
 pub const MAX_TASKS: usize = 32;
 
@@ -76,7 +76,11 @@ impl Sched {
         Some(Switch {
             old_rsp: &mut self.tasks[cur].rsp as *mut u64,
             new_rsp,
-            cr3: if space == 0 { paging::kernel_pml4() } else { space },
+            cr3: if space == 0 {
+                paging::kernel_pml4()
+            } else {
+                space
+            },
             kstack_top,
         })
     }
@@ -159,7 +163,10 @@ pub fn tick(now: u64) {
 }
 
 pub fn sleep_ms(ms: u64) {
-    kassert!(arch::interrupts_enabled(), "sleep_ms with interrupts disabled would hang");
+    kassert!(
+        arch::interrupts_enabled(),
+        "sleep_ms with interrupts disabled would hang"
+    );
     let ticks = ((ms * interrupts::TIMER_HZ as u64 + 999) / 1000).max(1);
     with(|s| {
         let cur = s.current;

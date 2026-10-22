@@ -1,6 +1,6 @@
-use crate::kassert;
 use crate::sync::IrqSpinLock;
 use core::ptr;
+use shared::kassert;
 
 pub const FRAME_SIZE: u64 = 4096;
 

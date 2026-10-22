@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
-use crate::{kassert, pmm};
+use crate::pmm;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use shared::kassert;
 
 pub const PRESENT: u64 = 1 << 0;
 pub const WRITABLE: u64 = 1 << 1;

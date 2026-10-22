@@ -1,8 +1,9 @@
 use crate::arch::outb;
 use crate::idt::{self, Frame};
-use crate::{kassert, keyboard};
+use crate::keyboard;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+use shared::kassert;
 
 pub const TIMER_HZ: u32 = 100; // 10 ms per tick
 const PIT_BASE_HZ: u32 = 1_193_182;

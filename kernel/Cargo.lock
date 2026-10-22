@@ -170,6 +170,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "shared"
+version = "0.1.0"
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -231,6 +235,7 @@ dependencies = [
  "pbkdf2",
  "sha1",
  "sha2",
+ "shared",
  "spin",
  "zodiac-desktop",
  "zpm-core",

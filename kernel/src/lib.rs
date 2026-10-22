@@ -7,7 +7,6 @@ extern crate alloc;
 
 // ---- Architecture-neutral ----
 mod arch;
-mod assertions;
 mod base;
 mod security;
 
@@ -26,6 +25,8 @@ mod legacy;
 #[cfg(target_arch = "x86_64")]
 mod memory;
 #[cfg(target_arch = "x86_64")]
+mod network;
+#[cfg(target_arch = "x86_64")]
 mod panic;
 #[cfg(target_arch = "x86_64")]
 mod process;
@@ -33,8 +34,6 @@ mod process;
 mod scheduler;
 #[cfg(target_arch = "x86_64")]
 mod vga;
-#[cfg(target_arch = "x86_64")]
-mod network;
 
 // ---- Transition aliases: old module paths keep working while files migrate ----
 #[cfg(target_arch = "x86_64")]

@@ -1,8 +1,9 @@
-use crate::{arch, assertions, keyboard, vga};
+use crate::{arch, keyboard, vga};
 use crate::{kprintln, slogln};
 use core::arch::asm;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use shared::assertions;
 
 static PANICKING: AtomicBool = AtomicBool::new(false);
 

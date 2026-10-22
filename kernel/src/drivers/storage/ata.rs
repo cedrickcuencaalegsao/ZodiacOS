@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use crate::arch::{inb, inw, outb, outw};
-use crate::kassert;
+use shared::kassert;
 
 #[derive(Clone, Copy)]
 pub struct DriveInfo {

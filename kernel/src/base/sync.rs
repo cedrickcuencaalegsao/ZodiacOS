@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering::{Acquire, Relaxed, Release}};
+use core::sync::atomic::{
+    AtomicBool,
+    Ordering::{Acquire, Relaxed, Release},
+};
 
 // ---- SpinLock: busy-waits. Never hold it across anything that can sleep. -------
 pub struct SpinLock<T> {
@@ -13,18 +16,29 @@ unsafe impl<T: Send> Sync for SpinLock<T> {}
 
 impl<T> SpinLock<T> {
     pub const fn new(value: T) -> Self {
-        SpinLock { locked: AtomicBool::new(false), data: UnsafeCell::new(value) }
+        SpinLock {
+            locked: AtomicBool::new(false),
+            data: UnsafeCell::new(value),
+        }
     }
 
     pub fn lock(&self) -> SpinGuard<'_, T> {
-        while self.locked.compare_exchange_weak(false, true, Acquire, Relaxed).is_err() {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Acquire, Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
         SpinGuard { lock: self }
     }
 
     pub fn try_lock(&self) -> Option<SpinGuard<'_, T>> {
-        if self.locked.compare_exchange(false, true, Acquire, Relaxed).is_ok() {
+        if self
+            .locked
+            .compare_exchange(false, true, Acquire, Relaxed)
+            .is_ok()
+        {
             Some(SpinGuard { lock: self })
         } else {
             None
@@ -59,11 +73,11 @@ impl<T> Drop for SpinGuard<'_, T> {
 #[cfg(target_arch = "x86_64")]
 mod blocking {
     use super::{SpinGuard, SpinLock};
-    use crate::kassert;
     use crate::scheduler::{self, run_queue::RunQueue};
     use core::cell::UnsafeCell;
     use core::mem::ManuallyDrop;
     use core::ops::{Deref, DerefMut};
+    use shared::kassert;
 
     /// SpinLock that also disables interrupts while held. Required for any data an
     /// interrupt handler or the scheduler touches: otherwise a tick could preempt
@@ -74,12 +88,17 @@ mod blocking {
 
     impl<T> IrqSpinLock<T> {
         pub const fn new(value: T) -> Self {
-            IrqSpinLock { inner: SpinLock::new(value) }
+            IrqSpinLock {
+                inner: SpinLock::new(value),
+            }
         }
 
         pub fn lock(&self) -> IrqGuard<'_, T> {
             let was_enabled = crate::arch::save_and_disable_interrupts();
-            IrqGuard { guard: ManuallyDrop::new(self.inner.lock()), was_enabled }
+            IrqGuard {
+                guard: ManuallyDrop::new(self.inner.lock()),
+                was_enabled,
+            }
         }
 
         /// The plain lock, for the scheduler, which manages interrupts by hand.
@@ -129,7 +148,10 @@ mod blocking {
     impl<T> Mutex<T> {
         pub const fn new(value: T) -> Self {
             Mutex {
-                state: IrqSpinLock::new(MutexState { locked: false, waiters: RunQueue::new() }),
+                state: IrqSpinLock::new(MutexState {
+                    locked: false,
+                    waiters: RunQueue::new(),
+                }),
                 data: UnsafeCell::new(value),
             }
         }
@@ -142,7 +164,10 @@ mod blocking {
                         st.locked = true;
                         return MutexGuard { mutex: self };
                     }
-                    kassert!(scheduler::ready(), "contended Mutex before the scheduler started");
+                    kassert!(
+                        scheduler::ready(),
+                        "contended Mutex before the scheduler started"
+                    );
                     st.waiters.push(scheduler::current_slot());
                     scheduler::block_current();
                 } // interrupts back on; the owner's unlock will wake us

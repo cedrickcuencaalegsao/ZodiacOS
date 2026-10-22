@@ -2,9 +2,10 @@ use crate::console::netcmd;
 use crate::console::{fscmd, hwcmd, memcmd, taskcmd, zpm_cmd};
 use crate::filesystem::{self, file};
 use crate::{arch, fs, interrupts, keyboard, user, vga};
-use crate::{kassert_eq, kprint, kprintln};
+use crate::{kprint, kprintln};
 use alloc::{format, string::String};
 use core::fmt;
+use shared::kassert_eq;
 
 use zpm_core::{Package, PackageKind, PackageSpace, Registry, Version};
 
