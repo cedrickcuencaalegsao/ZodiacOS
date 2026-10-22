@@ -125,7 +125,7 @@ fn execute(line: &str) {
 
     match parts[0] {
         "help" => help(),
-        "clear" => vga::clear(),
+        "clear" | "cls" => vga::clear(),
         "echo" => {
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
