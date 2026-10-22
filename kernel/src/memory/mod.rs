@@ -4,7 +4,7 @@ pub mod heap;
 pub mod physical;
 pub mod virtual_memory;
 
-use crate::base::error::Error;
+use errors::Error;
 
 pub fn init() -> Result<(), Error> {
     physical::init();

@@ -64,7 +64,7 @@ use pci::PciDevice;
 pub struct PciDriver {
     pub name: &'static str,
     pub matches: fn(&PciDevice) -> bool,
-    pub probe: fn(&PciDevice) -> crate::base::error::Result<()>,
+    pub probe: fn(&PciDevice) -> errors::Result<()>,
 }
 
 static PCI_DRIVERS: &[PciDriver] = &[PciDriver {

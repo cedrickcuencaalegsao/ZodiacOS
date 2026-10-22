@@ -1,5 +1,5 @@
-use crate::base::error::{Error, Result};
 use alloc::{string::String, vec::Vec};
+use errors::{Error, Result};
 
 pub const MAX_PATH: usize = 4096;
 pub const MAX_NAME: usize = 255;

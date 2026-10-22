@@ -1,10 +1,10 @@
 use super::inode::{DirEntry, FileType, Inode, Stat};
 use super::path::check_name;
-use crate::base::error::{Error, Result};
 use crate::base::sync::Mutex;
 use crate::time;
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use errors::{Error, Result};
 
 const MAX_FILE_SIZE: u64 = 64 * 1024 * 1024;
 

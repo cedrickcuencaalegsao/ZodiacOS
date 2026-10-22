@@ -9,11 +9,11 @@ pub mod ramfs;
 pub mod vfs;
 pub mod zdfs; // the old flat disk format; stays compiled until FAT32 replaces it
 
-pub use inode::{FileType,Stat};
+pub use inode::{FileType, Stat};
 
-use crate::base::error::Error;
 use crate::{log_info, log_warn};
 use alloc::{format, string::String};
+use errors::Error;
 
 /// The standard Unix layout, parents before children: (path, permission bits).
 const HIERARCHY: &[(&str, u16)] = &[

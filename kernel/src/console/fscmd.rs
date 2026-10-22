@@ -1,9 +1,9 @@
-use crate::base::error::Result;
 use crate::drivers::storage;
 use crate::filesystem::file::{self, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
 use crate::filesystem::{self, FileType, Stat, mount};
 use crate::{kprint, kprintln, time, vga};
 use alloc::{format, string::String};
+use errors::Result;
 
 pub fn run(cmd: &str, args: &[&str]) {
     match cmd {

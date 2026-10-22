@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 pub mod ata;
 
-use crate::base::error::Result;
 use crate::base::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
+use errors::Result;
 
 pub trait BlockDevice: Send + Sync {
     fn name(&self) -> &str;

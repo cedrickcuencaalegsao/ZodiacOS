@@ -2,9 +2,9 @@
 pub mod e1000;
 pub mod wifi;
 
-use crate::base::error::Result;
 use crate::base::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
+use errors::Result;
 pub mod arp;
 pub mod ethernet;
 pub mod icmp;

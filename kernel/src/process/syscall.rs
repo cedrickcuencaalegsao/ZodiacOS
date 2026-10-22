@@ -1,8 +1,8 @@
-use crate::base::error::Error;
 use crate::filesystem::file;
 use crate::{interrupts, paging, scheduler};
 use alloc::{string::String, vec::Vec};
 use core::arch::global_asm;
+use errors::Error;
 
 pub const SYS_WRITE: u64 = 0; // write(fd, ptr, len)
 pub const SYS_EXIT: u64 = 1; // exit(code)

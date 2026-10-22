@@ -1,8 +1,8 @@
 use super::inode::{FileType, Inode};
 use super::mount;
 use super::path::split_parent;
-use crate::base::error::{Error, Result};
 use alloc::{string::String, sync::Arc};
+use errors::{Error, Result};
 
 /// Finds the inode for a canonical absolute path, crossing mount points.
 pub fn resolve(path: &str) -> Result<Arc<dyn Inode>> {

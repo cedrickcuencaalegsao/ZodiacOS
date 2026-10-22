@@ -1,11 +1,15 @@
 // #![allow(dead_code)]
-use super::{register, MacAddr, NetDevice, NetStats};
-use crate::base::error::{Error, Result};
+use super::{MacAddr, NetDevice, NetStats, register};
 use crate::base::sync::Mutex;
 use crate::drivers::pci::{Bar, PciDevice};
 use crate::{log_info, paging, pmm};
 use alloc::{format, string::String, sync::Arc};
-use core::sync::atomic::{fence, AtomicU64, AtomicUsize, Ordering::{Relaxed, SeqCst}};
+use core::sync::atomic::{
+    AtomicU64, AtomicUsize,
+    Ordering::{Relaxed, SeqCst},
+    fence,
+};
+use errors::{Error, Result};
 
 const INTEL: u16 = 0x8086;
 const MODELS: [u16; 2] = [0x100E, 0x100F]; // 82540EM (QEMU's default NIC), 82545EM
@@ -108,7 +112,15 @@ pub fn probe(dev: &PciDevice) -> Result<()> {
     let tx_ring = pmm::alloc_zeroed().ok_or(Error::OutOfMemory)?;
     let rx_bufs = pmm::alloc_contiguous(RING * BUF_SIZE / 4096).ok_or(Error::OutOfMemory)?;
     let tx_bufs = pmm::alloc_contiguous(RING * BUF_SIZE / 4096).ok_or(Error::OutOfMemory)?;
-    let nic = Inner { mmio, rx_ring, rx_bufs, rx_next: 0, tx_ring, tx_bufs, tx_tail: 0 };
+    let nic = Inner {
+        mmio,
+        rx_ring,
+        rx_bufs,
+        rx_next: 0,
+        tx_ring,
+        tx_bufs,
+        tx_tail: 0,
+    };
 
     // Reset, mask every interrupt (we poll), bring the link up
     nic.write(CTRL, nic.read(CTRL) | CTRL_RST);
@@ -120,12 +132,22 @@ pub fn probe(dev: &PciDevice) -> Result<()> {
     crate::arch::sleep_ms(10);
     nic.write(IMC, 0xFFFF_FFFF);
     let _ = nic.read(ICR);
-    nic.write(CTRL, (nic.read(CTRL) | CTRL_SLU | CTRL_ASDE) & !(CTRL_LRST | CTRL_PHY_RST));
+    nic.write(
+        CTRL,
+        (nic.read(CTRL) | CTRL_SLU | CTRL_ASDE) & !(CTRL_LRST | CTRL_PHY_RST),
+    );
 
     // MAC address: the card loads it from its EEPROM into the receive-address registers
     let ral = nic.read(RAL0);
     let rah = nic.read(RAH0);
-    let mut mac: MacAddr = [ral as u8, (ral >> 8) as u8, (ral >> 16) as u8, (ral >> 24) as u8, rah as u8, (rah >> 8) as u8];
+    let mut mac: MacAddr = [
+        ral as u8,
+        (ral >> 8) as u8,
+        (ral >> 16) as u8,
+        (ral >> 24) as u8,
+        rah as u8,
+        (rah >> 8) as u8,
+    ];
     if mac == [0; 6] {
         for i in 0..3 {
             let word = nic.eeprom(i as u32)?;
@@ -173,7 +195,13 @@ pub fn probe(dev: &PciDevice) -> Result<()> {
     let name = format!("eth{}", COUNT.fetch_add(1, Relaxed));
     log_info!(
         "e1000: {} MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        name,
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
     );
     register(Arc::new(E1000 {
         name,

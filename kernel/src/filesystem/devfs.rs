@@ -1,7 +1,7 @@
 use super::inode::{DirEntry, FileType, Inode, Stat};
-use crate::base::error::{Error, Result};
 use crate::{arch, keyboard, vga};
 use alloc::{string::String, sync::Arc, vec::Vec};
+use errors::{Error, Result};
 
 #[derive(Clone, Copy)]
 enum Dev {

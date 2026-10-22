@@ -1,11 +1,11 @@
 use super::inode::{DirEntry, FileType, Inode, Stat};
 use super::path::resolve_against;
 use super::vfs;
-use crate::base::error::{Error, Result};
 use crate::base::sync::Mutex;
 use crate::scheduler;
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use errors::{Error, Result};
 
 // open() flags: the same values as Linux, so ported programs keep working
 pub const O_RDONLY: u32 = 0;

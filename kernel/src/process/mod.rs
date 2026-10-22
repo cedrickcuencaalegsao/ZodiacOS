@@ -4,11 +4,11 @@ pub mod programs;
 pub mod syscall;
 pub mod task;
 
-use crate::base::error::Error;
 use crate::base::sync::Mutex;
 use crate::scheduler::{self, MAX_TASKS};
 use crate::{arch, kassert, paging, pmm, vga};
 use crate::{kprintln, slogln};
+use errors::Error;
 use task::{Entry, State, Task, name_str};
 
 // Each kernel stack gets a slot in its own virtual region: one unmapped guard page

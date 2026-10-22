@@ -1,9 +1,9 @@
 use super::ipv4::{self, checksum};
-use crate::base::error::Result;
 use crate::drivers::network::NetDevice;
 use crate::interrupts;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering::SeqCst};
+use errors::Result;
 
 const ID: u16 = 0x5A44;
 

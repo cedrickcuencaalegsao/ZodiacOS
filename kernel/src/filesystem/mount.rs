@@ -1,7 +1,7 @@
 use super::inode::Inode;
-use crate::base::error::{Error, Result};
 use crate::base::sync::Mutex;
 use alloc::{string::String, sync::Arc, vec::Vec};
+use errors::{Error, Result};
 
 struct Mount {
     path: String,

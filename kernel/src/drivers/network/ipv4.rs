@@ -1,8 +1,8 @@
 use super::{arp, config, ethernet, icmp};
-use crate::base::error::{Error, Result};
 use crate::drivers::network::NetDevice;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU16, Ordering::Relaxed};
+use errors::{Error, Result};
 
 pub const ICMP: u8 = 1;
 

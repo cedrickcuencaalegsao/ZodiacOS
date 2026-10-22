@@ -1,9 +1,9 @@
 use super::inode::{DirEntry, FileType, Inode, Stat};
 use super::mount;
-use crate::base::error::{Error, Result};
 use crate::process::task;
 use crate::{heap, interrupts, pmm, scheduler};
 use alloc::{format, string::String, sync::Arc, vec::Vec};
+use errors::{Error, Result};
 
 type Generator = fn() -> String;
 
