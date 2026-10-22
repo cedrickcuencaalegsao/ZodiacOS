@@ -161,7 +161,7 @@ pub fn init() {
     let frames = ((max_phys / FRAME_SIZE) as usize).min(MAX_FRAMES);
 
     // The bitmap goes right after the kernel image (code, data and .bss)
-    let kernel_end = unsafe { &raw const __kernel_end as usize };
+    let kernel_end = &raw const __kernel_end as usize;
     let bitmap_addr = (kernel_end + 4095) & !4095;
     let bytes = (frames + 7) / 8;
     let reserved_end = (bitmap_addr + bytes + 4095) / 4096; // first frame that may be handed out

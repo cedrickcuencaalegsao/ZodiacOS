@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use alloc::{format, string::String, vec::Vec};
 use login_manager::session::{AuthError, Session};
 use login_manager::user_accounts::UserInfo;

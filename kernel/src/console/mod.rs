@@ -4,6 +4,8 @@ pub mod fscmd;
 pub mod hwcmd;
 pub mod login;
 pub mod memcmd;
+pub mod netcmd;
 pub mod splash;
 pub mod taskcmd;
 pub mod terminal;
+pub mod zpm_cmd;

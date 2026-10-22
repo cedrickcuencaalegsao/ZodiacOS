@@ -27,52 +27,47 @@ extern "x86-interrupt" fn timer_irq(_f: Frame) {
 }
 
 fn io_wait() {
-    unsafe { outb(0x80, 0) }; // a write to an unused port gives the PIC time to settle
+    outb(0x80, 0); // a write to an unused port gives the PIC time to settle
 }
 
 /// The BIOS maps IRQs onto vectors 8..15, which collide with CPU exceptions
 /// (IRQ0 would look like a double fault). Move them to 32..47.
 fn remap_pic() {
-    unsafe {
-        outb(0x20, 0x11);
-        io_wait(); // start init (cascade mode)
-        outb(0xA0, 0x11);
-        io_wait();
-        outb(0x21, IRQ_BASE);
-        io_wait(); // master vector offset
-        outb(0xA1, IRQ_BASE + 8);
-        io_wait(); // slave vector offset
-        outb(0x21, 0x04);
-        io_wait(); // slave sits on master IRQ2
-        outb(0xA1, 0x02);
-        io_wait();
-        outb(0x21, 0x01);
-        io_wait(); // 8086 mode
-        outb(0xA1, 0x01);
-        io_wait();
+    outb(0x20, 0x11);
+    io_wait(); // start init (cascade mode)
+    outb(0xA0, 0x11);
+    io_wait();
+    outb(0x21, IRQ_BASE);
+    io_wait(); // master vector offset
+    outb(0xA1, IRQ_BASE + 8);
+    io_wait(); // slave vector offset
+    outb(0x21, 0x04);
+    io_wait(); // slave sits on master IRQ2
+    outb(0xA1, 0x02);
+    io_wait();
+    outb(0x21, 0x01);
+    io_wait(); // 8086 mode
+    outb(0xA1, 0x01);
+    io_wait();
 
-        outb(0x21, 0xFC); // unmask IRQ0 (timer) and IRQ1 (keyboard) only
-        outb(0xA1, 0xFF);
-    }
+    outb(0x21, 0xFC); // unmask IRQ0 (timer) and IRQ1 (keyboard) only
+    outb(0xA1, 0xFF);
 }
 
 fn start_timer(hz: u32) {
     let divisor = (PIT_BASE_HZ / hz) as u16;
-    unsafe {
-        outb(0x43, 0x36); // channel 0, lobyte/hibyte, mode 3 (square wave)
-        outb(0x40, (divisor & 0xFF) as u8);
-        outb(0x40, (divisor >> 8) as u8);
-    }
+
+    outb(0x43, 0x36); // channel 0, lobyte/hibyte, mode 3 (square wave)
+    outb(0x40, (divisor & 0xFF) as u8);
+    outb(0x40, (divisor >> 8) as u8);
 }
 
 /// Tell the PIC the interrupt is handled; without this it sends nothing more.
 fn eoi(irq: u8) {
-    unsafe {
-        if irq >= 8 {
-            outb(0xA0, 0x20);
-        }
-        outb(0x20, 0x20);
+    if irq >= 8 {
+        outb(0xA0, 0x20);
     }
+    outb(0x20, 0x20);
 }
 
 // extern "x86-interrupt" fn timer_irq(_f: Frame) {

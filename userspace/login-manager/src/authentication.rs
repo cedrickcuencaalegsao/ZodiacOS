@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::components::Input;
 use crate::session::Session;
 use crate::user_accounts::UserInfo;

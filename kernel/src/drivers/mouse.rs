@@ -6,11 +6,9 @@
 //! `feed()` from the handler instead of `poll()`.)
 //!
 //! Add `pub mod mouse;` to kernel/src/drivers/mod.rs.
+#![allow(dead_code)]
 use crate::arch::{inb, outb};
-use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicU8, AtomicUsize,
-    Ordering::Relaxed,
-};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering::Relaxed};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static IDX: AtomicUsize = AtomicUsize::new(0); // which byte of the packet is next
@@ -22,7 +20,7 @@ static BTN: AtomicU8 = AtomicU8::new(0); // bit0 left, bit1 right, bit2 middle
 
 // ---- keyboard-controller plumbing ---------------------------------------------
 
-unsafe fn wait_write() -> bool {
+fn wait_write() -> bool {
     for _ in 0..100_000 {
         if inb(0x64) & 0x02 == 0 {
             return true;
@@ -31,7 +29,7 @@ unsafe fn wait_write() -> bool {
     false
 }
 
-unsafe fn wait_read() -> bool {
+fn wait_read() -> bool {
     for _ in 0..100_000 {
         if inb(0x64) & 0x01 != 0 {
             return true;
@@ -40,7 +38,7 @@ unsafe fn wait_read() -> bool {
     false
 }
 
-unsafe fn flush_output() {
+fn flush_output() {
     for _ in 0..32 {
         if inb(0x64) & 0x01 == 0 {
             break;
@@ -50,11 +48,14 @@ unsafe fn flush_output() {
 }
 
 /// Sends one command to the mouse itself (not the keyboard) and waits for its ACK (0xFA).
-unsafe fn mouse_cmd(cmd: u8) -> bool {
+#[allow(unsafe_code)]
+fn mouse_cmd(cmd: u8) -> bool {
     if !wait_write() {
         return false;
     }
-    outb(0x64, 0xD4); // "next byte goes to the mouse"
+
+    outb(0x64, 0xD4);
+    // "next byte goes to the mouse"
     if !wait_write() {
         return false;
     }
@@ -130,10 +131,10 @@ pub fn shutdown() {
         return;
     }
     let was_on = irq_save();
-    unsafe {
-        let _ = mouse_cmd(0xF5); // disable reporting
-        flush_output();
-    }
+
+    let _ = mouse_cmd(0xF5); // disable reporting
+    flush_output();
+
     irq_restore(was_on);
     reset_state();
 }
@@ -144,7 +145,7 @@ pub fn poll() {
         return;
     }
     for _ in 0..64 {
-        let mut status = unsafe { inb(0x64) };
+        let mut status = inb(0x64);
         if status & 0x01 == 0 {
             if IDX.load(Relaxed) == 0 {
                 break; // nothing pending and not in the middle of a packet
@@ -152,7 +153,7 @@ pub fn poll() {
             // mid-packet: the next byte follows within about a millisecond
             let mut got = false;
             for _ in 0..4000 {
-                status = unsafe { inb(0x64) };
+                status = inb(0x64);
                 if status & 0x01 != 0 {
                     got = true;
                     break;
@@ -166,7 +167,7 @@ pub fn poll() {
         if status & 0x20 == 0 {
             break; // a keyboard byte: leave it for the keyboard IRQ handler
         }
-        feed(unsafe { inb(0x60) });
+        feed(inb(0x60));
     }
 }
 

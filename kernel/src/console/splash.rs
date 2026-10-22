@@ -2,6 +2,19 @@ use crate::arch::sleep_ms;
 use crate::console::fbcon;
 use crate::vga::{self, put_char};
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering::Relaxed};
+
+// Splash screen driven by real boot progress.
+//
+//   splash::begin(total, done)  draw the logo and an empty bar (no sleeping)
+//   splash::step()              one init stage finished, advance the bar
+//   splash::finish()            fill to 100%, flash/fade out, clear the screen
+//   splash::abort()             leave the splash immediately (init failed)
+//   splash::active()            true while the splash owns the screen
+//
+// begin() and step() never call sleep_ms, because they run before the timer
+// interrupt is enabled. Only finish() animates, so call it after
+// interrupts::enable().
 
 // Logo bitmap: 50 x 30 pixels. Each text cell holds two stacked pixels
 // (half blocks), so at scale 1 it takes 50 columns x 15 rows.
@@ -9,13 +22,10 @@ const W: usize = 50;
 const H: usize = 30; // must be even
 const MAX_SCALE: usize = 4;
 
-// Timing (ms)
-const FIRST_STAR_MS: u32 = 150;
-const DRAW_STEP_MS: u32 = 110; // per constellation line
-const HOLD_MS: u32 = 250;
+// Timing (ms), used by finish() only
+const END_HOLD_MS: u32 = 300;
 const FLASH_MS: u32 = 120;
 const FADE_MS: u32 = 100;
-const END_HOLD_MS: u32 = 300;
 
 // Palette (all on black)
 const DIM: u8 = 0x08;
@@ -44,11 +54,123 @@ const STARS: [(i32, i32, i32); 9] = [
 /// Stars joined in order; the last hop closes the loop back to star 3.
 const PATH: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 3];
 
+// ───────────── Progress state ─────────────
+
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static TOTAL: AtomicUsize = AtomicUsize::new(1);
+static DONE: AtomicUsize = AtomicUsize::new(0);
+static SHOWN: AtomicI64 = AtomicI64::new(0); // bar fill already on screen (pixels)
+
+/// True while the splash owns the screen. Make the logger skip the screen
+/// (serial only) while this is set, or log lines will draw over the logo.
+pub fn active() -> bool {
+    ACTIVE.load(Relaxed)
+}
+
+/// Start the splash. `total` is the number of init stages, `done` how many
+/// have already finished (e.g. memory + drivers before the framebuffer exists).
+pub fn begin(total: usize, done: usize) {
+    TOTAL.store(total.max(1), Relaxed);
+    DONE.store(done, Relaxed);
+    SHOWN.store(0, Relaxed);
+    ACTIVE.store(true, Relaxed);
+    if fbcon::active() {
+        hd_begin();
+    } else {
+        text_begin();
+    }
+    redraw_bar();
+}
+
+/// One init stage finished.
+pub fn step() {
+    if !active() {
+        return;
+    }
+    DONE.fetch_add(1, Relaxed);
+    redraw_bar();
+}
+
+/// Leave the splash right away (init failed, panic path).
+pub fn abort() {
+    if !ACTIVE.swap(false, Relaxed) {
+        return;
+    }
+    vga::clear();
+    vga::enable_cursor();
+}
+
+/// Keep the splash (with its current bar) on screen for `ms` milliseconds.
+/// Needs the timer running, so call it after interrupts::enable().
+pub fn hold(ms: u32) {
+    if active() {
+        sleep_ms(ms);
+    }
+}
+
+// Optional: guarantee a minimum total splash time instead of a fixed delay.
+// Needs an uptime counter from your timer; adapt `uptime_ms` to what you have.
+//
+// static START_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+// (in begin():  START_MS.store(crate::arch::uptime_ms(), Relaxed);)
+//
+// pub fn hold_until(min_ms: u32) {
+//     let elapsed = crate::arch::uptime_ms().saturating_sub(START_MS.load(Relaxed));
+//     if elapsed < min_ms as u64 {
+//         sleep_ms(min_ms - elapsed as u32);
+//     }
+// }
+
+/// Fill the bar, hold, fade out and hand the screen to the shell.
+/// Needs the timer running (sleep_ms).
+pub fn finish() {
+    if !active() {
+        return;
+    }
+    DONE.store(TOTAL.load(Relaxed), Relaxed);
+    redraw_bar();
+    sleep_ms(END_HOLD_MS);
+    if fbcon::active() {
+        hd_fade();
+    } else {
+        text_fade();
+    }
+    ACTIVE.store(false, Relaxed);
+    vga::clear(); // resets the cursor to row 0 for the shell
+    vga::enable_cursor();
+}
+
+fn redraw_bar() {
+    let num = DONE.load(Relaxed).min(TOTAL.load(Relaxed)) as i64;
+    let den = TOTAL.load(Relaxed) as i64;
+    if fbcon::active() {
+        let g = hd_layout();
+        let fill = g.bar_len * num / den;
+        let prev = SHOWN.swap(fill, Relaxed);
+        let pad = BAR_HW / 16 + 2;
+        bar_draw(g.bx, g.by, g.bar_len, BAR_HW, fill, g.bx + prev - pad - 2, g.bx + fill + pad + 2, 256);
+    } else {
+        let t = text_layout();
+        let fill = t.bar_len as i64 * num / den;
+        SHOWN.store(fill, Relaxed);
+        draw_bar(t.bar_row, t.bar_col, t.bar_len, fill as usize, WHITE, DIM);
+    }
+}
+
 // ───────────── Text-mode path (VGA text / fallback) ─────────────
 
 struct Logo {
     lines: [u64; H],
     stars: [u64; H],
+}
+
+struct TextLayout {
+    s: usize,
+    top: usize,
+    logo_col: usize,
+    bar_len: usize,
+    bar_col: usize,
+    bar_row: usize,
 }
 
 fn center(width: usize, len: usize) -> usize {
@@ -96,6 +218,18 @@ fn add_star(bm: &mut [u64; H], (cx, cy, size): (i32, i32, i32)) {
     }
 }
 
+/// The complete constellation: every line and star from PATH.
+fn build_logo() -> Logo {
+    let mut logo = Logo { lines: [0; H], stars: [0; H] };
+    add_star(&mut logo.stars, STARS[PATH[0]]);
+    for pair in PATH.windows(2) {
+        let (a, b) = (STARS[pair[0]], STARS[pair[1]]);
+        line(&mut logo.lines, (a.0, a.1), (b.0, b.1));
+        add_star(&mut logo.stars, b);
+    }
+    logo
+}
+
 /// Draw the logo at an integer scale. Each bitmap pixel becomes a `s` x `s`
 /// block of half-cells, so pixels stay square on an 8x16 cell grid.
 fn draw_logo(l: &Logo, row: usize, col: usize, s: usize, line_c: u8, star_c: u8) {
@@ -124,12 +258,8 @@ fn draw_bar(row: usize, col: usize, len: usize, filled: usize, fill_c: u8, track
     }
 }
 
-pub fn run(total_ms: u32) {
-    // Framebuffer console: use the pixel-accurate renderer.
-    if fbcon::active() {
-        return run_hd(total_ms);
-    }
-
+/// Scale and positions for the text-mode splash (pure function of screen size).
+fn text_layout() -> TextLayout {
     let (w, h) = (vga::width(), vga::height());
 
     // Largest scale that leaves a margin on every side.
@@ -142,10 +272,20 @@ pub fn run(total_ms: u32) {
     let block_h = rows + gap + 1;
     // Centered, nudged up a little (optical centre).
     let top = (h.saturating_sub(block_h) / 2).saturating_sub(h / 16);
-    let logo_col = center(w, W * s);
     let bar_len = (W * s * 3 / 5).max(10);
-    let bar_col = center(w, bar_len);
-    let bar_row = top + rows + gap;
+    TextLayout {
+        s,
+        top,
+        logo_col: center(w, W * s),
+        bar_len,
+        bar_col: center(w, bar_len),
+        bar_row: top + rows + gap,
+    }
+}
+
+fn text_begin() {
+    let (w, h) = (vga::width(), vga::height());
+    let t = text_layout();
 
     vga::disable_cursor();
     for r in 0..h {
@@ -154,43 +294,23 @@ pub fn run(total_ms: u32) {
         }
     }
 
-    // Constellation draws itself: one star, then line + star at a time.
-    let mut logo = Logo { lines: [0; H], stars: [0; H] };
-    add_star(&mut logo.stars, STARS[PATH[0]]);
-    draw_logo(&logo, top, logo_col, s, SOFT, WHITE);
-    sleep_ms(FIRST_STAR_MS);
+    let logo = build_logo();
+    draw_logo(&logo, t.top, t.logo_col, t.s, SOFT, WHITE);
+    draw_bar(t.bar_row, t.bar_col, t.bar_len, 0, WHITE, DIM);
+}
 
-    let segments = (PATH.len() - 1) as u32;
-    for pair in PATH.windows(2) {
-        let (a, b) = (STARS[pair[0]], STARS[pair[1]]);
-        line(&mut logo.lines, (a.0, a.1), (b.0, b.1));
-        add_star(&mut logo.stars, b);
-        draw_logo(&logo, top, logo_col, s, SOFT, WHITE);
-        sleep_ms(DRAW_STEP_MS);
-    }
-    sleep_ms(HOLD_MS);
-
-    // Hairline progress bar: dim track, white fill.
-    draw_bar(bar_row, bar_col, bar_len, 0, WHITE, DIM);
-    let fixed = FIRST_STAR_MS + DRAW_STEP_MS * segments + HOLD_MS + END_HOLD_MS + FLASH_MS + 2 * FADE_MS;
-    let step_ms = total_ms.saturating_sub(fixed) / bar_len as u32;
-    for i in 1..=bar_len {
-        draw_bar(bar_row, bar_col, bar_len, i, WHITE, DIM);
-        sleep_ms(step_ms);
-    }
-    sleep_ms(END_HOLD_MS);
+fn text_fade() {
+    let t = text_layout();
+    let logo = build_logo();
 
     // Flash everything white, then fade out to black.
-    draw_logo(&logo, top, logo_col, s, WHITE, WHITE);
+    draw_logo(&logo, t.top, t.logo_col, t.s, WHITE, WHITE);
     sleep_ms(FLASH_MS);
     for c in [SOFT, DIM] {
-        draw_logo(&logo, top, logo_col, s, c, c);
-        draw_bar(bar_row, bar_col, bar_len, bar_len, c, c);
+        draw_logo(&logo, t.top, t.logo_col, t.s, c, c);
+        draw_bar(t.bar_row, t.bar_col, t.bar_len, t.bar_len, c, c);
         sleep_ms(FADE_MS);
     }
-
-    vga::clear(); // resets the cursor to row 0 for the shell
-    vga::enable_cursor();
 }
 
 // ───────────── HD path (framebuffer console) ─────────────
@@ -203,8 +323,7 @@ const MAX_K: i64 = 11;
 const LINE_I: i64 = 170; // line brightness (0..255)
 const GLOW_I: i64 = 40; // star halo brightness at the star's edge, 0 disables it
 const TRACK_I: i64 = 56; // progress-bar track brightness
-const SUB: i64 = 6; // animation steps per constellation line
-const SUB_MS: u32 = 20;
+const BAR_HW: i64 = 48; // bar half-thickness in 1/16 px (3 px)
 
 struct Canvas(UnsafeCell<[u8; BUF_W * BUF_H]>);
 unsafe impl Sync for Canvas {}
@@ -220,6 +339,39 @@ struct Rect {
     y0: i64,
     x1: i64, // exclusive
     y1: i64, // exclusive
+}
+
+/// Screen geometry of the HD splash (pure function of the screen size).
+struct Hd {
+    k: i64,       // pixels per logo unit
+    ox: i64,      // logo origin on screen
+    oy: i64,
+    bx: i64,      // progress bar start
+    by: i64,
+    bar_len: i64,
+    w: i64,
+    h: i64,
+}
+
+fn hd_layout() -> Hd {
+    let (pw, ph) = fbcon::pixel_size();
+    let (w, h) = (pw as i64, ph as i64);
+
+    // Pixels per logo unit: the logo takes about 28% of the width / 40% of the height.
+    let k = (w * 28 / 100 / W as i64).min(h * 40 / 100 / H as i64).clamp(1, MAX_K);
+    let (lw, lh) = (W as i64 * k, H as i64 * k);
+    let bar_len = lw * 3 / 5;
+
+    Hd {
+        k,
+        ox: (w - lw) / 2, // logo exactly centered on the screen
+        oy: (h - lh) / 2,
+        bx: (w - bar_len) / 2, // bar centered horizontally, 85% of the way down
+        by: h * 85 / 100,
+        bar_len,
+        w,
+        h,
+    }
 }
 
 fn isqrt(n: i64) -> i64 {
@@ -353,78 +505,37 @@ fn bar_draw(bx: i64, by: i64, len: i64, hw16: i64, fill: i64, c0: i64, c1: i64, 
     }
 }
 
-fn run_hd(total_ms: u32) {
-    let (pw, ph) = fbcon::pixel_size();
-    let (w, h) = (pw as i64, ph as i64);
-
-    // Pixels per logo unit: the logo takes about 28% of the width / 40% of the height.
-    let k = (w * 28 / 100 / W as i64).min(h * 40 / 100 / H as i64).clamp(1, MAX_K);
-    let (lw, lh) = (W as i64 * k, H as i64 * k);
-    let line_hw = (2 * k).max(12); // line half-width, 1/16 px
-
-    // Logo: exactly centered on the screen.
-    let ox = (w - lw) / 2;
-    let oy = (h - lh) / 2;
-    let (ox_u, oy_u) = (ox as usize, oy as usize);
-
-    // Progress bar: 3 px thick (half-height 1.5 px = 24/16), rounded ends,
-    // centered horizontally, 85% of the way down the screen.
-    let bar_hw: i64 = 48; // 6px
-    let bar_len = lw * 3 / 5;
-    let bx = (w - bar_len) / 2;
-    let by = h * 85 / 100;
-    let pad = bar_hw / 16 + 2;
+/// Black screen, full constellation drawn at once (no sleeping: the timer
+/// isn't running yet), empty bar track.
+fn hd_begin() {
+    let g = hd_layout();
+    let (ox, oy) = (g.ox as usize, g.oy as usize);
 
     vga::disable_cursor();
-    fbcon::fill_gray(0, 0, pw, ph, 0);
+    fbcon::fill_gray(0, 0, g.w as usize, g.h as usize, 0);
     canvas().fill(0);
 
+    let k = g.k;
     let pt = |i: usize| (STARS[i].0 as i64 * k + k / 2, STARS[i].1 as i64 * k + k / 2);
     let rad = |i: usize| if STARS[i].2 == 2 { 16 * k } else { 10 * k };
+    let line_hw = (2 * k).max(12); // line half-width, 1/16 px
 
-    // First star fades in.
-    let r = star(pt(PATH[0]), rad(PATH[0]));
-    for b in 1..=4i64 {
-        flush(ox_u, oy_u, r, b * 64);
-        sleep_ms(30);
-    }
-
-    // Each line grows out of its star, then the next star pops in.
+    flush(ox, oy, star(pt(PATH[0]), rad(PATH[0])), 256);
     for pair in PATH.windows(2) {
-        let (a, b) = (pt(pair[0]), pt(pair[1]));
-        for s in 1..=SUB {
-            let e = (a.0 + (b.0 - a.0) * s / SUB, a.1 + (b.1 - a.1) * s / SUB);
-            let r = stroke(a, e, line_hw, LINE_I);
-            flush(ox_u, oy_u, r, 256);
-            sleep_ms(SUB_MS);
-        }
-        let r = star(b, rad(pair[1]));
-        flush(ox_u, oy_u, r, 256);
+        flush(ox, oy, stroke(pt(pair[0]), pt(pair[1]), line_hw, LINE_I), 256);
+        flush(ox, oy, star(pt(pair[1]), rad(pair[1])), 256);
     }
-    sleep_ms(250);
 
-    // Progress bar.
-    bar_draw(bx, by, bar_len, bar_hw, 0, 0, w, 256);
-    let steps = (bar_len / 7).max(1);
-    let fixed = 120 + (PATH.len() as u32 - 1) * SUB as u32 * SUB_MS + 250 + 300 + 8 * 25;
-    let step_ms = total_ms.saturating_sub(fixed) / steps as u32;
-    let mut prev = 0;
-    for i in 1..=steps {
-        let fill = bar_len * i / steps;
-        bar_draw(bx, by, bar_len, bar_hw, fill, bx + prev - pad - 2, bx + fill + pad + 2, 256);
-        prev = fill;
-        sleep_ms(step_ms);
-    }
-    sleep_ms(300);
+    bar_draw(g.bx, g.by, g.bar_len, BAR_HW, 0, 0, g.w, 256);
+}
 
-    // True fade to black.
+/// True fade to black.
+fn hd_fade() {
+    let g = hd_layout();
     let all = Rect { x0: 0, y0: 0, x1: BUF_W as i64, y1: BUF_H as i64 };
     for b in (0..8i64).rev() {
-        flush(ox_u, oy_u, all, b * 32);
-        bar_draw(bx, by, bar_len, bar_hw, bar_len, 0, w, b * 32);
+        flush(g.ox as usize, g.oy as usize, all, b * 32);
+        bar_draw(g.bx, g.by, g.bar_len, BAR_HW, g.bar_len, 0, g.w, b * 32);
         sleep_ms(25);
     }
-
-    vga::clear(); // resets the cursor to row 0 for the shell
-    vga::enable_cursor();
 }

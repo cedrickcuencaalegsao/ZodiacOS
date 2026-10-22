@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Software renderer drawing into a pixel slice owned by the caller.
 //! Colors are 0x00RRGGBB; `alpha` is 0..=255.
 use crate::Font;

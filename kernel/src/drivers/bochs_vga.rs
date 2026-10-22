@@ -24,17 +24,13 @@ static PAGES: AtomicUsize = AtomicUsize::new(1);
 static HEIGHT: AtomicUsize = AtomicUsize::new(0);
 
 fn write(index: u16, value: u16) {
-    unsafe {
-        outw(VBE_INDEX, index);
-        outw(VBE_DATA, value);
-    }
+    outw(VBE_INDEX, index);
+    outw(VBE_DATA, value);
 }
 
 fn read(index: u16) -> u16 {
-    unsafe {
-        outw(VBE_INDEX, index);
-        inw(VBE_DATA)
-    }
+    outw(VBE_INDEX, index);
+    inw(VBE_DATA)
 }
 
 /// Number of screens that can be flipped between (2 = double buffering works, else 1).

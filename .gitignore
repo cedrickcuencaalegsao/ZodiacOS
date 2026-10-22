@@ -1,5 +1,7 @@
 .DS_Store
 /build
+/abi/target
 /kernel/target
 /userspace/desktop/target
 /disk
+/zpm/target

@@ -2,10 +2,8 @@ use crate::arch::{inb, outb};
 use core::fmt;
 
 fn cmos(reg: u8) -> u8 {
-    unsafe {
-        outb(0x70, reg);
-        inb(0x71)
-    }
+    outb(0x70, reg);
+    inb(0x71)
 }
 
 fn bcd(v: u8) -> u8 {
@@ -74,6 +72,14 @@ impl fmt::Display for Stamp {
         }
         let (y, mo, d) = civil_from_days((self.0 / 86_400) as i32);
         let secs = self.0 % 86_400;
-        write!(f, "{:04}-{:02}-{:02} {:02}:{:02}", y, mo, d, secs / 3600, secs % 3600 / 60)
+        write!(
+            f,
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            y,
+            mo,
+            d,
+            secs / 3600,
+            secs % 3600 / 60
+        )
     }
 }

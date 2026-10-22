@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::arch::outb;
 use crate::console::fbcon;
 use core::fmt;
@@ -137,34 +138,34 @@ pub fn update_cursor() {
         return;
     }
     let pos = (ROW.load(Relaxed) * WIDTH + COL.load(Relaxed)) as u16;
-    unsafe {
+   
         outb(0x3D4, 0x0F);
         outb(0x3D5, (pos & 0xFF) as u8);
         outb(0x3D4, 0x0E);
         outb(0x3D5, (pos >> 8) as u8);
-    }
+    
 }
 
 pub fn disable_cursor() {
     if fbcon::active() {
         return fbcon::set_cursor(false);
     }
-    unsafe {
+   
         outb(0x3D4, 0x0A);
         outb(0x3D5, 0x20);
-    }
+    
 }
 
 pub fn enable_cursor() {
     if fbcon::active() {
         return fbcon::set_cursor(true);
     }
-    unsafe {
+    
         outb(0x3D4, 0x0A);
         outb(0x3D5, 0x0E);
         outb(0x3D4, 0x0B);
         outb(0x3D5, 0x0F);
-    }
+   
 }
 
 // ---- kprint! / kprintln! -----------------------------------------------------------
@@ -184,8 +185,10 @@ impl fmt::Write for Writer {
 #[macro_export]
 macro_rules! kprint {
     ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let _ = write!($crate::vga::Writer, $($arg)*);
+        let _ = ::core::fmt::Write::write_fmt(
+            &mut $crate::vga::Writer,
+            format_args!($($arg)*),
+        );
     }};
 }
 

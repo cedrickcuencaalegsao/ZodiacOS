@@ -93,6 +93,7 @@ SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m 256M \
+	-nic user,model=e1000\
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
 	-display cocoa \
@@ -280,6 +281,8 @@ clean:
 	rm -rf $(BUILD_DIR)
 	cd kernel && cargo clean && cd ..
 	cd userspace/desktop && cargo clean && cd ../../
+	cd abi && cargo clean && cd ..
+	cd zpm && cargo clean && cd ..
 	echo "       Done. (data disk in disk/ was kept)"
 
 # Wipes the x86 data disk too (all files you saved inside ZodiacOS)

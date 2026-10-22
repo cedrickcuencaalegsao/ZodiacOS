@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::base::error::{Error, Result};
 use alloc::{string::String, sync::Arc, vec::Vec};
 

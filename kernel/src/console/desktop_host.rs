@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Connects the userspace desktop library to the kernel's framebuffer, input and timer.
 //! Add `pub mod desktop_host;` to kernel/src/console/mod.rs.
 use crate::drivers::framebuffer::{self, Framebuffer};

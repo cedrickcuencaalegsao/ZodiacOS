@@ -10,14 +10,12 @@ pub fn halt() -> ! {
 const PIT_HZ: u32 = 1_193_182;
 
 fn pit_wait_ticks(ticks: u16) {
-    unsafe {
-        let v = inb(0x61);
-        outb(0x61, (v & 0xFC) | 0x01);
-        outb(0x43, 0xB0);
-        outb(0x42, (ticks & 0xFF) as u8);
-        outb(0x42, (ticks >> 8) as u8);
-        while inb(0x61) & 0x20 == 0 {}
-    }
+    let v = inb(0x61);
+    outb(0x61, (v & 0xFC) | 0x01);
+    outb(0x43, 0xB0);
+    outb(0x42, (ticks & 0xFF) as u8);
+    outb(0x42, (ticks >> 8) as u8);
+    while inb(0x61) & 0x20 == 0 {}
 }
 
 /// Busy-wait delay (PIT channel 2). For early boot only: it needs no interrupts,
@@ -54,17 +52,17 @@ pub fn shutdown() -> ! {
     halt()
 }
 
-pub fn interrupts_enabled() -> bool{
+pub fn interrupts_enabled() -> bool {
     let flags: u64;
-    unsafe { asm!("pushfq", "pop {}", out(reg) flags)};
+    unsafe { asm!("pushfq", "pop {}", out(reg) flags) };
     flags & (1 << 9) != 0
 }
 
 pub fn disable_interrupts() {
     unsafe { asm!("cli", options(nostack)) };
-} 
+}
 
-pub fn enable_interrupts(){
+pub fn enable_interrupts() {
     unsafe { asm!("sti", options(nostack)) };
 }
 
@@ -77,7 +75,6 @@ pub fn save_and_disable_interrupts() -> bool {
 
 pub fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
-	enable_interrupts();
+        enable_interrupts();
     }
 }
-
