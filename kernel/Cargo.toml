@@ -27,9 +27,9 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"]}
 sha1 = { version = "0.10", default-features = false}
 login-manager = { path = "../userspace/login-manager" }
 zodiac-desktop = { path = "../userspace/desktop" }
-zpm-core = { path = "../zpm/core" }
+zpm_core = { path = "zpm_core" }
 errors = { path = "errors" }
 shared = { path = "shared" }
 
 [workspace]
-members = ["errors", "shared"]
+members = ["errors", "shared", "zpm_core"]

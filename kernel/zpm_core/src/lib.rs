@@ -1,13 +1,46 @@
-#![no_std]
+//! zpm-core: the Zodiac package manager core.
+//!
+//! * Without features: `no_std`. Provides the in-memory `Registry` and the
+//!   shell `commands` used by the ZodiacOS kernel.
+//! * With the `std` feature: also provides the host-side installer
+//!   (`install::plan` / `install::execute`) and its supporting modules.
 
-// #[cfg(feature = "std")]
-// extern crate std;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+// Available everywhere (kernel + host).
+pub mod commands;
+
+// Host-only installer layer.
+#[cfg(feature = "std")]
+pub mod config;
+#[cfg(feature = "std")]
+pub mod database;
+#[cfg(feature = "std")]
+pub mod dependency;
+#[cfg(feature = "std")]
+pub mod download;
+#[cfg(feature = "std")]
+pub mod error;
+#[cfg(feature = "std")]
+pub mod install;
+#[cfg(feature = "std")]
+pub mod package;
+#[cfg(feature = "std")]
+pub mod repository;
+#[cfg(feature = "std")]
+pub mod transaction;
+
+// Note: `error::Result` is intentionally not re-exported at the crate root,
+// because it would shadow `core::result::Result` for the code below.
+#[cfg(feature = "std")]
+pub use error::ZpmError;
+#[cfg(feature = "std")]
+pub use install::{execute, plan};
 
 /// Maximum length of a package id.
 pub const ID_MAX: usize = 32;
 
 /// Sizes (in bytes) of the regions packages may use.
-/// Field meaning is a guess from the call site: adjust names to taste.
 #[derive(Clone, Copy, Debug)]
 pub struct PackageSpace {
     pub system: u64,
@@ -35,7 +68,8 @@ pub enum PackageKind {
     Data,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Ordering is derived field by field (major, then minor, then patch).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version {
     pub major: u16,
     pub minor: u16,
