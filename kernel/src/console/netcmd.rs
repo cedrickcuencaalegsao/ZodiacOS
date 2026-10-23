@@ -1,5 +1,5 @@
-use crate::drivers::network::{self as nic, wifi};
-use crate::drivers::network::{self, arp, icmp, Config};
+use crate::drivers::network::{arp, icmp, Config,wifi};
+use crate::drivers::network;
 use crate::security::wpa2;
 use crate::{interrupts, scheduler};
 use crate::kprintln;
@@ -47,7 +47,7 @@ fn ifconfig(args: &[&str]) {
         return;
     }
 
-    let devices = nic::list();
+    let devices = network::list();
     if devices.is_empty() {
         kprintln!("no network interfaces");
         return;

@@ -24,8 +24,8 @@ mod interrupts;
 mod legacy;
 #[cfg(target_arch = "x86_64")]
 mod memory;
-#[cfg(target_arch = "x86_64")]
-mod network;
+// #[cfg(target_arch = "x86_64")]
+// mod network;
 #[cfg(target_arch = "x86_64")]
 mod panic;
 #[cfg(target_arch = "x86_64")]

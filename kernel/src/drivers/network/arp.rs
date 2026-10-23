@@ -1,4 +1,4 @@
-use super::{config, ethernet, ipv4::same_subnet};
+use super::{Config, ethernet, ipv4::same_subnet};
 use crate::base::sync::Mutex;
 use crate::drivers::network::NetDevice;
 use crate::scheduler;
@@ -95,3 +95,13 @@ pub fn resolve(dev: &Arc<dyn NetDevice>, ip: [u8; 4]) -> Result<[u8; 6]> {
     }
     Err(Error::Unreachable)
 }
+
+pub fn config() -> Config {
+    *CONFIG.lock()
+}
+
+static CONFIG: Mutex<Config> = Mutex::new(Config {
+    ip: [10, 0, 2, 15],
+    netmask: [255, 255, 255, 0],
+    gateway: [10, 0, 2, 2],
+});

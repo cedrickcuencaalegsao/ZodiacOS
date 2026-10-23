@@ -1,8 +1,9 @@
-use super::{arp, config, ethernet, icmp};
+use super::{arp, Config, ethernet, icmp};
 use crate::drivers::network::NetDevice;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU16, Ordering::Relaxed};
 use errors::{Error, Result};
+use crate::base::sync::Mutex;
 
 pub const ICMP: u8 = 1;
 
@@ -93,3 +94,13 @@ pub fn handle(dev: &Arc<dyn NetDevice>, src_mac: [u8; 6], packet: &[u8]) {
         icmp::handle(dev, src_mac, src, payload);
     }
 }
+
+pub fn config() -> Config {
+    *CONFIG.lock()
+}
+
+static CONFIG: Mutex<Config> = Mutex::new(Config {
+    ip: [10, 0, 2, 15],
+    netmask: [255, 255, 255, 0],
+    gateway: [10, 0, 2, 2],
+});

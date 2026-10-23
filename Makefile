@@ -1,5 +1,4 @@
 # ---- Config -----------------------------------------------------------------
-
 ARCH ?= x86_64
 
 ifeq ($(ARCH),x86_64)
@@ -93,7 +92,8 @@ SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m 256M \
-	-nic user,model=e1000\
+	-nic user,model=e1000 \
+	-nic user,model=virtio-net-pci \
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
 	-display cocoa \
@@ -226,8 +226,8 @@ _iso: $(KERNEL_ELF)
 		"Run the kernel in QEMU:" \
 		"  qemu-system-aarch64 -M virt -m 256M -nographic -cpu cortex-a72 -kernel kernel-aarch64.elf" \
 		"" \
-		"This ISO is a container for the kernel. It is not UEFI-bootable yet." \
-		> $(ISO_ROOT)/README.txt
+		"This ISO is a container for the kernel. It is not UEFI-bootable yet, see README.txt inside"
+	> $(ISO_ROOT)/README.txt
 	xorriso -as mkisofs \
 		-V ZODIACOS \
 		-o $(ISO_IMG) \
