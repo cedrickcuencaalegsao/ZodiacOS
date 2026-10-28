@@ -2,8 +2,27 @@ use crate::drivers::storage;
 use crate::filesystem::file::{self, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
 use crate::filesystem::{self, FileType, Stat, mount};
 use crate::{kprint, kprintln, time, vga};
-use alloc::{format, string::String};
+use alloc::{format, string::String, vec::Vec};
+use core::cmp::Ordering;
 use errors::Result;
+
+#[derive(Default, Clone, Copy)]
+struct Opts {
+    long: bool,
+    all: bool,
+    human: bool,
+    classify: bool,
+    one: bool,
+    reverse: bool,
+    by_time: bool,
+    by_size: bool,
+}
+
+struct Item {
+    name: String,
+    kind: FileType,
+    st: Option<Stat>,
+}
 
 pub fn run(cmd: &str, args: &[&str]) {
     match cmd {
@@ -79,57 +98,262 @@ fn print_long(name: &str, st: &Stat) {
 }
 
 fn ls(args: &[&str]) {
-    let long = args.contains(&"-l");
-    let path = args
-        .iter()
-        .copied()
-        .find(|a| !a.starts_with('-'))
-        .unwrap_or(".");
+    let mut opts = Opts::default();
+    let mut paths: Vec<&str> = Vec::new();
 
+    for &arg in args {
+        if arg.len() > 1 && arg.starts_with('-') {
+            for c in arg[1..].chars() {
+                match c {
+                    'l' => opts.long = true,
+                    'a' => opts.all = true,
+                    'h' => opts.human = true,
+                    'F' => opts.classify = true,
+                    '1' => opts.one = true,
+                    'r' => opts.reverse = true,
+                    't' => opts.by_time = true,
+                    'S' => opts.by_size = true,
+                    _ => {
+                        kprintln!("ls: invalid option -- '{}'", c);
+                        kprintln!("usage: ls [-lahF1rtS] [path...]");
+                        return;
+                    }
+                }
+            }
+        } else {
+            paths.push(arg);
+        }
+    }
+    if paths.is_empty() {
+        paths.push(".");
+    }
+
+    let multi = paths.len() > 1;
+    for (i, path) in paths.iter().enumerate() {
+        if multi {
+            if i > 0 {
+                kprintln!();
+            }
+            kprintln!("{}:", path);
+        }
+        ls_one(path, opts);
+    }
+}
+
+fn ls_one(path: &str, opts: Opts) {
     let st = match file::stat(path) {
         Ok(st) => st,
         Err(e) => {
-            kprintln!("ls: {}: {}", path, e);
+            kprintln!("ls: cannot access '{}': {}", path, e);
             return;
         }
     };
+
+    // A plain file: just show that one entry.
     if st.kind != FileType::Directory {
-        print_long(path, &st);
+        let item = Item {
+            name: String::from(path),
+            kind: st.kind,
+            st: Some(st),
+        };
+        print_items(&[item], opts);
         return;
     }
 
-    let mut entries = match file::readdir(path) {
-        Ok(entries) => entries,
+    let entries = match file::readdir(path) {
+        Ok(e) => e,
         Err(e) => {
-            kprintln!("ls: {}: {}", path, e);
+            kprintln!("ls: cannot open '{}': {}", path, e);
             return;
         }
     };
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let cell = entries.iter().map(|e| e.name.len()).max().unwrap_or(0) + 2;
-    let width = vga::width();
-    let mut x = 0;
-    for entry in &entries {
-        let is_dir = entry.kind == FileType::Directory;
-        if long {
-            if let Ok(st) = file::stat(&join(path, &entry.name)) {
-                print_long(&entry.name, &st);
+    // stat every entry once, so sorting and -l don't hit the filesystem twice
+    let mut items: Vec<Item> = entries
+        .into_iter()
+        .filter(|e| opts.all || !e.name.starts_with('.'))
+        .map(|e| {
+            let st = file::stat(&join(path, &e.name)).ok();
+            Item {
+                name: e.name,
+                kind: e.kind,
+                st,
             }
-            continue;
-        }
-        if x + cell > width {
-            kprintln!();
-            x = 0;
-        }
-        vga::set_color(if is_dir { 0x0B } else { 0x0F });
-        kprint!("{:<width$}", entry.name, width = cell);
-        vga::set_color(0x0F);
-        x += cell;
+        })
+        .collect();
+
+    items.sort_by(|a, b| compare(a, b, opts));
+    if opts.reverse {
+        items.reverse();
     }
-    if !long && x != 0 {
+
+    print_items(&items, opts);
+}
+
+fn compare(a: &Item, b: &Item, opts: Opts) -> Ordering {
+    let by_name = || {
+        a.name
+            .bytes()
+            .map(|c| c.to_ascii_lowercase())
+            .cmp(b.name.bytes().map(|c| c.to_ascii_lowercase()))
+    };
+
+    if opts.by_time {
+        let t = |i: &Item| i.st.as_ref().map_or(0, |s| s.mtime);
+        return t(b).cmp(&t(a)).then_with(by_name);
+    }
+    if opts.by_size {
+        let s = |i: &Item| i.st.as_ref().map_or(0, |s| s.size);
+        return s(b).cmp(&s(a)).then_with(by_name);
+    }
+
+    // default: directories first, then name (case-insensitive)
+    let a_dir = a.kind == FileType::Directory;
+    let b_dir = b.kind == FileType::Directory;
+    b_dir.cmp(&a_dir).then_with(by_name)
+}
+
+fn display_name(item: &Item, opts: Opts) -> String {
+    if opts.classify && item.kind == FileType::Directory {
+        format!("{}/", item.name)
+    } else {
+        item.name.clone()
+    }
+}
+
+fn name_color(item: &Item) -> u8 {
+    if item.kind == FileType::Directory {
+        0x0B
+    } else {
+        0x0F
+    }
+}
+
+fn print_items(items: &[Item], opts: Opts) {
+    if items.is_empty() {
+        return;
+    }
+
+    if opts.long {
+        let sizes: Vec<String> = items
+            .iter()
+            .map(|i| fmt_size(i.st.as_ref().map_or(0, |s| s.size), opts.human))
+            .collect();
+        let size_w = sizes.iter().map(|s| s.len()).max().unwrap_or(1);
+
+        for (item, size) in items.iter().zip(&sizes) {
+            match &item.st {
+                Some(s) => kprint!(
+                    "{} {:<5} {:>sw$} {} ",
+                    mode_string(s.kind, s.mode),
+                    owner(s.uid),
+                    size,
+                    time::Stamp(s.mtime),
+                    sw = size_w
+                ),
+                None => kprint!(
+                    "{:<10} {:<5} {:>sw$} {:<16} ",
+                    "?",
+                    "?",
+                    "?",
+                    "?",
+                    sw = size_w
+                ),
+            }
+            vga::set_color(name_color(item));
+            kprintln!("{}", display_name(item, opts));
+            vga::set_color(0x0F);
+        }
+        return;
+    }
+
+    if opts.one {
+        for item in items {
+            vga::set_color(name_color(item));
+            kprintln!("{}", display_name(item, opts));
+            vga::set_color(0x0F);
+        }
+        return;
+    }
+
+    // Short format: column-major grid like real ls (fills down, then across)
+    let names: Vec<String> = items.iter().map(|i| display_name(i, opts)).collect();
+    let cell = names.iter().map(|n| n.len()).max().unwrap_or(0) + 2;
+    let cols = core::cmp::max(1, vga::width() / cell);
+    let rows = (items.len() + cols - 1) / cols;
+
+    for r in 0..rows {
+        for c in 0..cols {
+            let idx = c * rows + r;
+            if idx >= items.len() {
+                break;
+            }
+            vga::set_color(name_color(&items[idx]));
+            kprint!("{:<w$}", names[idx], w = cell);
+            vga::set_color(0x0F);
+        }
         kprintln!();
     }
+}
+
+fn owner(uid: u32) -> String {
+    if uid == 0 { String::from("root") } else { format!("{}", uid) }
+}
+
+fn type_label(kind: FileType) -> &'static str {
+    match kind {
+        FileType::Directory => "dir",
+        _ => "file",
+    }
+}
+
+fn fmt_size(bytes: u64, human: bool) -> String {
+    if !human {
+        return format!("{}", bytes);
+    }
+    const UNITS: [&str; 4] = ["B", "K", "M", "G"];
+    let mut whole = bytes;
+    let mut rem = 0;
+    let mut u = 0;
+    while whole >= 1024 && u < UNITS.len() - 1 {
+        rem = (whole % 1024) * 10 / 1024; // one decimal digit
+        whole /= 1024;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{}B", whole)
+    } else {
+        format!("{}.{}{}", whole, rem, UNITS[u])
+    }
+}
+
+/// Unix seconds -> "YYYY-MM-DD HH:MM" (UTC)
+fn fmt_time(ts: u64) -> String {
+    if ts == 0 {
+        return String::from("-");
+    }
+    let days = (ts / 86_400) as i64;
+    let secs = ts % 86_400;
+
+    // days since 1970-01-01 -> civil date (Howard Hinnant's algorithm)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        y,
+        m,
+        d,
+        secs / 3600,
+        (secs % 3600) / 60
+    )
 }
 
 fn cd(args: &[&str]) {

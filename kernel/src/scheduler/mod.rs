@@ -114,7 +114,7 @@ pub fn init() {
         *boot = Task::EMPTY;
         boot.state = State::Running;
         boot.set_name("kernel");
-        boot.kstack_top = 0x90000; // the boot stack
+        boot.kstack_top = arch::BOOT_KSTACK_TOP; // the boot stack
         boot.slice_left = policy::new_slice();
         s.current = 0;
         s.ready = true;
@@ -139,7 +139,7 @@ pub fn schedule() {
     let switch = SCHED.raw().lock().pick_next();
 
     if let Some(sw) = switch {
-        arch::current::gdt::set_kernel_stack(sw.kstack_top);
+        arch::set_kernel_stack(sw.kstack_top);
         if paging::current() != sw.cr3 {
             paging::activate(sw.cr3);
         }

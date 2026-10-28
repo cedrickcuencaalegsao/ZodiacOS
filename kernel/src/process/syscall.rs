@@ -1,8 +1,10 @@
 use crate::filesystem::file;
 use crate::{interrupts, paging, scheduler};
 use alloc::{string::String, vec::Vec};
-use core::arch::global_asm;
 use errors::Error;
+
+#[cfg(target_arch = "x86_64")]
+use core::arch::global_asm;
 
 pub const SYS_WRITE: u64 = 0; // write(fd, ptr, len)
 pub const SYS_EXIT: u64 = 1; // exit(code)
@@ -19,6 +21,11 @@ pub const SYS_UNLINK: u64 = 11; // unlink(path)
 
 const MAX_PATH_ARG: usize = 256;
 
+// ---------------------------------------------------------------------------
+// x86_64 entry: `int 0x80`, number in rax, args in rdi/rsi/rdx, result in rax.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "x86_64")]
 global_asm!(
     r#"
 .global zodiac_syscall_entry
@@ -37,13 +44,58 @@ zodiac_syscall_entry:
 "#
 );
 
+#[cfg(target_arch = "x86_64")]
 unsafe extern "C" {
     fn zodiac_syscall_entry();
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn init() {
     crate::idt::set_gate_user(0x80, zodiac_syscall_entry as *const () as u64);
 }
+
+// ---------------------------------------------------------------------------
+// aarch64 entry: `svc #0`, number in x8, args in x0-x2, result in x0.
+// The "Lower EL, AArch64, Synchronous" vector must save a TrapFrame, pass
+// ESR_EL1 as the second argument, call `aarch64_sync_from_user`, restore the
+// frame and `eret`.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+pub struct TrapFrame {
+    pub x: [u64; 31], // x0..x30
+    pub sp_el0: u64,
+    pub elr_el1: u64,
+    pub spsr_el1: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+pub extern "C" fn aarch64_sync_from_user(frame: &mut TrapFrame, esr: u64) {
+    const EC_SVC64: u64 = 0x15;
+    if (esr >> 26) & 0x3F == EC_SVC64 {
+        // system calls can be preempted: unmask IRQs (clear DAIF.I)
+        unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)) };
+        let (n, a0, a1, a2) = (frame.x[8], frame.x[0], frame.x[1], frame.x[2]);
+        frame.x[0] = syscall_dispatch(n, a0, a1, a2);
+        unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)) };
+        // ELR_EL1 already points past the svc; eret restores it
+    } else {
+        // data/instruction abort, undefined instruction, etc.: kill the process
+        crate::process::exit_current(-1);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn init() {
+    // Nothing to register: VBAR_EL1's lower-EL synchronous vector already
+    // routes to aarch64_sync_from_user.
+}
+
+// ---------------------------------------------------------------------------
+// Portable dispatcher
+// ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_dispatch(num: u64, a0: u64, a1: u64, a2: u64) -> u64 {
@@ -60,16 +112,12 @@ pub extern "C" fn syscall_dispatch(num: u64, a0: u64, a1: u64, a2: u64) -> u64 {
         }
         SYS_GETPID => Ok(scheduler::current_pid() as u64),
         SYS_UPTIME => Ok(interrupts::uptime_ms()),
-        SYS_OPEN => path_from_user(a0)
-            .and_then(|p| file::open(&p, a1 as u32, a2 as u16))
-            .map(|fd| fd as u64),
+        SYS_OPEN => sys_open(a0, a1, a2),
         SYS_CLOSE => file::close(a0 as usize).map(|_| 0),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_LSEEK => file::lseek(a0 as usize, a1 as i64, a2 as u32),
-        SYS_MKDIR => path_from_user(a0)
-            .and_then(|p| file::mkdir(&p, a1 as u16))
-            .map(|_| 0),
-        SYS_UNLINK => path_from_user(a0).and_then(|p| file::unlink(&p)).map(|_| 0),
+        SYS_MKDIR => sys_mkdir(a0, a1),
+        SYS_UNLINK => sys_unlink(a0),
         _ => Err(Error::Unsupported),
     };
     match result {
@@ -117,6 +165,24 @@ fn path_from_user(ptr: u64) -> Result<String, Error> {
         bytes.push(byte);
     }
     Err(Error::NameTooLong)
+}
+
+fn sys_open(path: u64, flags: u64, mode: u64) -> Result<u64, Error> {
+    let p: String = path_from_user(path)?;
+    let fd = file::open(p.as_str(), flags as u32, mode as u16)?;
+    Ok(fd as u64)
+}
+
+fn sys_mkdir(path: u64, mode: u64) -> Result<u64, Error> {
+    let p: String = path_from_user(path)?;
+    file::mkdir(p.as_str(), mode as u16)?;
+    Ok(0)
+}
+
+fn sys_unlink(path: u64) -> Result<u64, Error> {
+    let p: String = path_from_user(path)?;
+    file::unlink(p.as_str())?;
+    Ok(0)
 }
 
 fn sys_write(fd: u64, ptr: u64, len: u64) -> Result<u64, Error> {

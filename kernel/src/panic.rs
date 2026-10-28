@@ -11,6 +11,7 @@ const PANIC_ATTR: u8 = 0x4F; // white on red
 const TITLE_ATTR: u8 = 0x4E; // yellow on red
 
 #[panic_handler]
+#[cfg(target_arch = "x86_64")]
 fn panic(info: &PanicInfo) -> ! {
     unsafe { asm!("cli") };
 

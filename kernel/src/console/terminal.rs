@@ -109,6 +109,51 @@ fn print_prompt() {
     kprint!("> ");
 }
 
+#[cfg(target_arch = "x86_64")]
+const ARCH_NAME: &str = "x86_64";
+#[cfg(target_arch = "aarch64")]
+const ARCH_NAME: &str = "aarch64";
+
+// Must be unmapped. 0x4000_0000 is RAM on QEMU's aarch64 `virt` board, so it would not fault there.
+#[cfg(target_arch = "x86_64")]
+const PF_ADDR: usize = 0x4000_0000;
+#[cfg(target_arch = "aarch64")]
+const PF_ADDR: usize = 0x0000_1000_0000_0000;
+
+fn crash_undefined() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("ud2")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("udf #0")
+    };
+}
+
+fn crash_breakpoint() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("int3")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0")
+    };
+}
+
+fn crash_div() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "xor edx, edx", "mov eax, 1", "xor ecx, ecx", "div ecx",
+            out("rax") _, out("rcx") _, out("rdx") _
+        )
+    };
+    #[cfg(target_arch = "aarch64")]
+    kprintln!("div: integer division by zero does not trap on aarch64 (result is 0)");
+}
+
 fn execute(line: &str) {
     let mut parts = [""; 8];
     let mut argc = 0;
@@ -135,7 +180,7 @@ fn execute(line: &str) {
             }
             kprintln!();
         }
-        "about" | "version" => kprintln!("ZodiacOS 0.1.0 (x86_64)"),
+        "about" | "version" => kprintln!("ZodiacOS 0.1.0 ({})", ARCH_NAME),
         "reboot" | "restart" => {
             vga::set_color(0x0E);
             kprintln!("Restarting ZodiacOS...");
@@ -207,16 +252,11 @@ fn execute(line: &str) {
                 let n = args.len();
                 kassert_eq!(n, 99);
             }
-            Some("ud") => unsafe { core::arch::asm!("ud2") },
+            Some("ud") => crash_undefined(),
             Some("pf") => unsafe {
-                let _ = core::ptr::read_volatile(0x4000_0000 as *const u8);
+                let _ = core::ptr::read_volatile(PF_ADDR as *const u8);
             },
-            Some("div") => unsafe {
-                core::arch::asm!(
-                    "xor edx, edx", "mov eax, 1", "xor ecx, ecx", "div ecx",
-                    out("eax") _, out("ecx") _, out("edx") _
-                )
-            },
+            Some("div") => crash_div(),
             Some("null") => unsafe {
                 let _ = core::ptr::read_volatile(0x10 as *const u8);
             },
@@ -224,7 +264,7 @@ fn execute(line: &str) {
                 // the shell's own machine code lives in read-only pages
                 core::ptr::write_volatile(execute as *const () as *mut u8, 0);
             },
-            Some("bp") => unsafe { core::arch::asm!("int3") },
+            Some("bp") => crash_breakpoint(),
             Some("stack") => taskcmd::overflow_test(),
             _ => kprintln!("usage: crash <panic|assert|ud|pf|div|null|write|bp|stack>"),
         },

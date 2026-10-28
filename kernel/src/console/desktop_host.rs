@@ -219,10 +219,16 @@ pub fn run() -> Result<(), &'static str> {
     // as will fit (1 is required, 3 is best).
     let pixels = (fb.width * fb.height).max(1);
     let shown = try_buffer(pixels, UNKNOWN).unwrap_or_default();
-    let mut back = (1..=MAX_BUFFERS)
-        .rev()
-        .find_map(|n| try_buffer(pixels * n, 0))
-        .ok_or("not enough kernel heap for the desktop")?;
+    let mut back: Vec<u32> = Vec::new();
+    for n in (1..=MAX_BUFFERS).rev() {
+        if let Some(v) = try_buffer(pixels * n, 0) {
+            back = v;
+            break;
+        }
+    } 
+    if back.is_empty(){
+        return Err("not enough kernel heap fo the desktop");
+    }
     let pages = framebuffer::pages();
     crate::log_info!(
         "desktop: {} scratch screen(s), {} video page(s), {}",
@@ -269,7 +275,7 @@ pub fn run() -> Result<(), &'static str> {
         last_buttons: 0,
         out,
     };
-    zodiac_desktop::run(&mut host, &mut back);
+    zodiac_desktop::run(&mut host, back.as_mut_slice());
 
     framebuffer::show_page(0); // the console draws on page 0
     mouse::shutdown(); // otherwise a stray mouse byte can block the keyboard at the login screen

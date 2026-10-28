@@ -1,6 +1,4 @@
-use crate::arch::inb;
-use core::arch::asm;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
+use crate::drivers::serial;
 
 pub const KEY_UP: u8 = 0x80;
 pub const KEY_DOWN: u8 = 0x81;
@@ -12,129 +10,185 @@ pub const KEY_PAGE_UP: u8 = 0x86;
 pub const KEY_PAGE_DOWN: u8 = 0x87;
 pub const KEY_DELETE: u8 = 0x88;
 
-static SHIFT: AtomicBool = AtomicBool::new(false);
-static CTRL: AtomicBool = AtomicBool::new(false);
-static EXTENDED: AtomicBool = AtomicBool::new(false); // an 0xE0 prefix was just seen
+// ===========================================================================
+// x86_64: PS/2 keyboard (port 0x60/0x64, IRQ1)
+// ===========================================================================
+#[cfg(target_arch = "x86_64")]
+mod ps2 {
+    use super::*;
+    use crate::arch::inb;
+    use core::sync::atomic::{
+        AtomicBool, AtomicU8, AtomicUsize,
+        Ordering::{Acquire, Relaxed, Release},
+    };
 
-// Scancode set 1, indexed by scancode (0x00..=0x39). 0 = no printable char.
-const NORMAL: [u8; 58] = [
-    0, 27, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b'-', b'=', 8, b'\t',
-    b'q', b'w', b'e', b'r', b't', b'y', b'u', b'i', b'o', b'p', b'[', b']', b'\n', 0,
-    b'a', b's', b'd', b'f', b'g', b'h', b'j', b'k', b'l', b';', b'\'', b'`', 0, b'\\',
-    b'z', b'x', b'c', b'v', b'b', b'n', b'm', b',', b'.', b'/', 0, b'*', 0, b' ',
-];
+    static SHIFT: AtomicBool = AtomicBool::new(false);
+    static CTRL: AtomicBool = AtomicBool::new(false);
+    static EXTENDED: AtomicBool = AtomicBool::new(false); // an 0xE0 prefix was just seen
 
-const SHIFTED: [u8; 58] = [
-    0, 27, b'!', b'@', b'#', b'$', b'%', b'^', b'&', b'*', b'(', b')', b'_', b'+', 8, b'\t',
-    b'Q', b'W', b'E', b'R', b'T', b'Y', b'U', b'I', b'O', b'P', b'{', b'}', b'\n', 0,
-    b'A', b'S', b'D', b'F', b'G', b'H', b'J', b'K', b'L', b':', b'"', b'~', 0, b'|',
-    b'Z', b'X', b'C', b'V', b'B', b'N', b'M', b'<', b'>', b'?', 0, b'*', 0, b' ',
-];
+    // Scancode set 1, indexed by scancode (0x00..=0x39). 0 = no printable char.
+    const NORMAL: [u8; 58] = [
+        0, 27, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b'-', b'=', 8, b'\t',
+        b'q', b'w', b'e', b'r', b't', b'y', b'u', b'i', b'o', b'p', b'[', b']', b'\n', 0,
+        b'a', b's', b'd', b'f', b'g', b'h', b'j', b'k', b'l', b';', b'\'', b'`', 0, b'\\',
+        b'z', b'x', b'c', b'v', b'b', b'n', b'm', b',', b'.', b'/', 0, b'*', 0, b' ',
+    ];
 
-/// Scancode -> character or special key code, tracking shift, ctrl and 0xE0 prefixes.
-fn decode(sc: u8) -> Option<u8> {
-    if sc == 0xE0 {
-        EXTENDED.store(true, Relaxed);
-        return None;
-    }
-    let extended = EXTENDED.swap(false, Relaxed);
-    let released = sc & 0x80 != 0;
-    let code = sc & 0x7F;
+    const SHIFTED: [u8; 58] = [
+        0, 27, b'!', b'@', b'#', b'$', b'%', b'^', b'&', b'*', b'(', b')', b'_', b'+', 8, b'\t',
+        b'Q', b'W', b'E', b'R', b'T', b'Y', b'U', b'I', b'O', b'P', b'{', b'}', b'\n', 0,
+        b'A', b'S', b'D', b'F', b'G', b'H', b'J', b'K', b'L', b':', b'"', b'~', 0, b'|',
+        b'Z', b'X', b'C', b'V', b'B', b'N', b'M', b'<', b'>', b'?', 0, b'*', 0, b' ',
+    ];
 
-    if extended {
-        if code == 0x1D {
-            CTRL.store(!released, Relaxed); // right Ctrl
+    /// Scancode -> character or special key code, tracking shift, ctrl and 0xE0 prefixes.
+    fn decode(sc: u8) -> Option<u8> {
+        if sc == 0xE0 {
+            EXTENDED.store(true, Relaxed);
             return None;
         }
-        if released {
-            return None;
-        }
-        return match code {
-            0x48 => Some(KEY_UP),
-            0x50 => Some(KEY_DOWN),
-            0x4B => Some(KEY_LEFT),
-            0x4D => Some(KEY_RIGHT),
-            0x47 => Some(KEY_HOME),
-            0x4F => Some(KEY_END),
-            0x49 => Some(KEY_PAGE_UP),
-            0x51 => Some(KEY_PAGE_DOWN),
-            0x53 => Some(KEY_DELETE),
-            _ => None,
-        };
-    }
+        let extended = EXTENDED.swap(false, Relaxed);
+        let released = sc & 0x80 != 0;
+        let code = sc & 0x7F;
 
-    match code {
-        0x2A | 0x36 => {
-            SHIFT.store(!released, Relaxed);
-            None
-        }
-        0x1D => {
-            CTRL.store(!released, Relaxed);
-            None
-        }
-        _ if released => None,
-        _ => {
-            let table = if SHIFT.load(Relaxed) { &SHIFTED } else { &NORMAL };
-            let c = *table.get(code as usize)?;
-            if c == 0 {
+        if extended {
+            if code == 0x1D {
+                CTRL.store(!released, Relaxed); // right Ctrl
                 return None;
             }
-            if CTRL.load(Relaxed) && c.is_ascii_alphabetic() {
-                return Some(c & 0x1F); // Ctrl+A = 1 ... Ctrl+L = 12 ... Ctrl+Z = 26
+            if released {
+                return None;
             }
-            Some(c)
+            return match code {
+                0x48 => Some(KEY_UP),
+                0x50 => Some(KEY_DOWN),
+                0x4B => Some(KEY_LEFT),
+                0x4D => Some(KEY_RIGHT),
+                0x47 => Some(KEY_HOME),
+                0x4F => Some(KEY_END),
+                0x49 => Some(KEY_PAGE_UP),
+                0x51 => Some(KEY_PAGE_DOWN),
+                0x53 => Some(KEY_DELETE),
+                _ => None,
+            };
+        }
+
+        match code {
+            0x2A | 0x36 => {
+                SHIFT.store(!released, Relaxed);
+                None
+            }
+            0x1D => {
+                CTRL.store(!released, Relaxed);
+                None
+            }
+            _ if released => None,
+            _ => {
+                let table = if SHIFT.load(Relaxed) { &SHIFTED } else { &NORMAL };
+                let c = *table.get(code as usize)?;
+                if c == 0 {
+                    return None;
+                }
+                if CTRL.load(Relaxed) && c.is_ascii_alphabetic() {
+                    return Some(c & 0x1F); // Ctrl+A = 1 ... Ctrl+L = 12 ... Ctrl+Z = 26
+                }
+                Some(c)
+            }
+        }
+    }
+
+    // ---- Ring buffer: the IRQ handler produces, the shell consumes -----------
+    const CAP: usize = 64;
+    static BUF: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
+    static HEAD: AtomicUsize = AtomicUsize::new(0);
+    static TAIL: AtomicUsize = AtomicUsize::new(0);
+
+    fn push(c: u8) {
+        let head = HEAD.load(Relaxed);
+        let next = (head + 1) % CAP;
+        if next == TAIL.load(Acquire) {
+            return; // buffer full, drop the key
+        }
+        BUF[head].store(c, Relaxed);
+        HEAD.store(next, Release);
+    }
+
+    pub fn pop() -> Option<u8> {
+        let tail = TAIL.load(Relaxed);
+        if tail == HEAD.load(Acquire) {
+            return None;
+        }
+        let c = BUF[tail].load(Relaxed);
+        TAIL.store((tail + 1) % CAP, Release);
+        Some(c)
+    }
+
+    /// Called from the IRQ1 handler.
+    pub fn handle_irq() {
+        let sc = inb(0x60);
+        if let Some(c) = decode(sc) {
+            push(c);
+        }
+    }
+
+    /// Reads the controller directly, for when interrupts are off (the panic screen).
+    pub fn poll() -> Option<u8> {
+        if inb(0x64) & 1 == 0 {
+            return None;
+        }
+        decode(inb(0x60))
+    }
+
+    /// Drops anything the controller buffered before interrupts were enabled.
+    pub fn flush() {
+        for _ in 0..32 {
+            if inb(0x64) & 1 == 0 {
+                break;
+            }
+            let _ = inb(0x60);
         }
     }
 }
 
-// ---- Ring buffer: the IRQ handler produces, the shell consumes ---------------
-const CAP: usize = 64;
-static BUF: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
-static HEAD: AtomicUsize = AtomicUsize::new(0);
-static TAIL: AtomicUsize = AtomicUsize::new(0);
-
-fn push(c: u8) {
-    let head = HEAD.load(Relaxed);
-    let next = (head + 1) % CAP;
-    if next == TAIL.load(Acquire) {
-        return; // buffer full, drop the key
+// ===========================================================================
+// aarch64: no PS/2 controller. Keys come from the serial port (see below);
+// replace these stubs when you add a virtio-input or USB keyboard driver.
+// ===========================================================================
+#[cfg(not(target_arch = "x86_64"))]
+mod ps2 {
+    pub fn pop() -> Option<u8> {
+        None
     }
-    BUF[head].store(c, Relaxed);
-    HEAD.store(next, Release);
+    pub fn poll() -> Option<u8> {
+        None
+    }
+    pub fn flush() {}
 }
 
-fn pop() -> Option<u8> {
-    let tail = TAIL.load(Relaxed);
-    if tail == HEAD.load(Acquire) {
-        return None;
-    }
-    let c = BUF[tail].load(Relaxed);
-    TAIL.store((tail + 1) % CAP, Release);
-    Some(c)
-}
+/// Called from the IRQ1 handler (x86_64 only).
+#[cfg(target_arch = "x86_64")]
+pub use ps2::handle_irq;
 
-/// Called from the IRQ1 handler.
-pub fn handle_irq() {
-    let sc = inb(0x60) ;
-    if let Some(c) = decode(sc) {
-        push(c);
-    }
-}
+// ---------------------------------------------------------------------------
+// Shared API
+// ---------------------------------------------------------------------------
 
-/// Non-blocking: next typed key. Falls back to the serial port, so you can also
-/// type into the terminal that started QEMU (`-serial stdio`).
-pub fn read_char() -> Option<u8> {
-    if let Some(c) = pop() {
-        return Some(c);
-    }
-    crate::serial::read_byte().map(|b| match b {
+/// Next byte from the serial port, translated the way a terminal sends keys.
+fn serial_char() -> Option<u8> {
+    serial::read_byte().map(|b| match b {
         b'\r' => b'\n',
         0x7F => 8, // the terminal's backspace key
         other => other,
     })
 }
 
-/// Blocks until a key is typed. `hlt` idles the CPU until the next interrupt.
+/// Non-blocking: next typed key. Falls back to the serial port, so you can also
+/// type into the terminal that started QEMU (`-serial stdio`).
+pub fn read_char() -> Option<u8> {
+    ps2::pop().or_else(serial_char)
+}
+
+/// Blocks until a key is typed. The CPU idles (hlt / wfi) until the next interrupt.
 pub fn wait_char() -> u8 {
     loop {
         if let Some(c) = read_char() {
@@ -143,25 +197,22 @@ pub fn wait_char() -> u8 {
         if crate::scheduler::ready() {
             crate::scheduler::sleep_ms(10); // other threads run in the meantime
         } else {
-            unsafe { asm!("hlt", options(nomem, nostack)) };
+            crate::interrupts::wait_for_interrupt();
         }
     }
 }
 
 /// Reads the hardware directly, for when interrupts are off (the panic screen).
 pub fn poll_char() -> Option<u8> {
-    if  inb(0x64)  & 1 == 0 {
-        return None;
-    }
-    decode(inb(0x60) )
+    ps2::poll().or_else(serial_char)
 }
 
-/// Drops anything the controller buffered before interrupts were enabled.
+/// Drops anything buffered before interrupts were enabled.
 pub fn flush() {
-    for _ in 0..32 {
-        if inb(0x64)  & 1 == 0 {
+    ps2::flush();
+    for _ in 0..64 {
+        if serial::read_byte().is_none() {
             break;
         }
-        let _ = inb(0x60) ;
     }
 }
