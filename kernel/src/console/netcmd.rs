@@ -10,6 +10,7 @@ pub fn run(cmd: &str, args: &[&str]) {
         "ifconfig" => ifconfig(args),
         "ping" => ping(args),
         "arp" => arp_table(),
+        "nslookup" => nslookup(args),
         "wifi" => wifi_cmd(args),
         _ => {}
     }
@@ -31,7 +32,37 @@ fn ip_str(ip: [u8; 4]) -> String {
     format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
 }
 
+// ---- Name resolution ----------------------------------------------------------
+// Order: a.b.c.d as-is, then "gateway", then a real DNS lookup (network::dns,
+// via QEMU's resolver at 10.0.2.3), so google.com, youtube.com, github.com and
+// so on all work.
+fn resolve(text: &str) -> Result<[u8; 4], &'static str> {
+    if let Some(ip) = parse_ip(text) {
+        return Ok(ip);
+    }
+    if text == "gateway" {
+        return Ok(network::config().gateway);
+    }
+    network::dns::resolve(text)
+}
+
+fn nslookup(args: &[&str]) {
+    let Some(&name) = args.first() else {
+        kprintln!("usage: nslookup <hostname>");
+        return;
+    };
+    match resolve(name) {
+        Ok(ip) => kprintln!("{} -> {}", name, ip_str(ip)),
+        Err(e) => kprintln!("nslookup: {}: {}", name, e),
+    }
+}
+
 fn ifconfig(args: &[&str]) {
+    // `ifconfig debug` prints the card's own hardware counters
+    if args.first() == Some(&"debug") {
+        kprintln!("{}", crate::drivers::network::e1000::debug());
+        return;
+    }
     if args.first() == Some(&"set") {
         if args.len() != 4 {
             kprintln!("usage: ifconfig set <ip> <netmask> <gateway>");
@@ -88,16 +119,27 @@ fn arp_table() {
 }
 
 fn ping(args: &[&str]) {
-    let Some(target) = args.first().and_then(|a| parse_ip(a)) else {
-        kprintln!("usage: ping <a.b.c.d>");
+    let Some(&name) = args.first() else {
+        kprintln!("usage: ping <hostname | a.b.c.d>");
         return;
+    };
+    let target = match resolve(name) {
+        Ok(ip) => ip,
+        Err(e) => {
+            kprintln!("ping: {}: {}", name, e);
+            return;
+        }
     };
     let Some(dev) = network::interface() else {
         kprintln!("ping: no network interface");
         return;
     };
 
-    kprintln!("PING {}", ip_str(target));
+    if parse_ip(name).is_some() {
+        kprintln!("PING {}", ip_str(target));
+    } else {
+        kprintln!("PING {} ({})", name, ip_str(target));
+    }
     let (mut sent, mut received) = (0, 0);
     for _ in 0..4 {
         let seq = icmp::next_seq();

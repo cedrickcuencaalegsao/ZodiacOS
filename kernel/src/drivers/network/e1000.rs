@@ -37,6 +37,12 @@ const MTA: usize = 0x5200; // multicast table, 128 dwords
 const RAL0: usize = 0x5400;
 const RAH0: usize = 0x5404;
 
+// Hardware statistics registers. These CLEAR when read, so debug() below
+// adds each read to a running total instead of showing the raw value.
+const MPC: usize = 0x4010; // missed packets (no free RX descriptor)
+const GPRC: usize = 0x4074; // good packets received
+const GPTC: usize = 0x4080; // good packets transmitted
+
 const CTRL_LRST: u32 = 1 << 3;
 const CTRL_ASDE: u32 = 1 << 5; // auto speed detection
 const CTRL_SLU: u32 = 1 << 6; // set link up
@@ -54,8 +60,49 @@ const BUF_SIZE: usize = 2048;
 
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 
+// Debug support: base address of the (first) card's registers, plus running
+// totals of the clear-on-read hardware counters.
+static DEBUG_MMIO: AtomicUsize = AtomicUsize::new(0);
+static HW_RX_GOOD: AtomicU64 = AtomicU64::new(0);
+static HW_TX_GOOD: AtomicU64 = AtomicU64::new(0);
+static HW_MISSED: AtomicU64 = AtomicU64::new(0);
+
 pub fn matches(dev: &PciDevice) -> bool {
     dev.vendor == INTEL && MODELS.contains(&dev.device)
+}
+
+/// What the card itself reports, independent of our own software counters.
+/// Call it from `ifconfig` (e.g. `e1000::debug()`), then print the string.
+///
+///   tx_good stays 0                  -> the card is not transmitting
+///   tx_good > 0, rx_good = 0         -> frames left, nothing came back
+///   rx_good > 0 or rx head moved     -> the card received data, so the bug
+///                                       is in software (polling / ARP reply)
+pub fn debug() -> String {
+    let mmio = DEBUG_MMIO.load(Relaxed);
+    if mmio == 0 {
+        return String::from("e1000: not initialised");
+    }
+    let rd = |reg: usize| unsafe { ((mmio + reg) as *const u32).read_volatile() };
+
+    let v = rd(GPRC) as u64;
+    let rx_good = HW_RX_GOOD.fetch_add(v, Relaxed) + v;
+    let v = rd(GPTC) as u64;
+    let tx_good = HW_TX_GOOD.fetch_add(v, Relaxed) + v;
+    let v = rd(MPC) as u64;
+    let missed = HW_MISSED.fetch_add(v, Relaxed) + v;
+
+    format!(
+        "e1000 hw: rx_good={} tx_good={} missed={} | rx head={} tail={} | tx head={} tail={} | status={:#x}",
+        rx_good,
+        tx_good,
+        missed,
+        rd(RDH),
+        rd(RDT),
+        rd(TDH),
+        rd(TDT),
+        rd(STATUS)
+    )
 }
 
 struct Inner {
@@ -191,6 +238,9 @@ pub fn probe(dev: &PciDevice) -> Result<()> {
     nic.write(TDT, 0);
     nic.write(TIPG, 0x0060_200A);
     nic.write(TCTL, TCTL_EN | TCTL_PSP | (0x0F << 4) | (0x40 << 12));
+
+    // Remember where the registers are so debug() can read the hardware counters
+    DEBUG_MMIO.store(mmio, Relaxed);
 
     let name = format!("eth{}", COUNT.fetch_add(1, Relaxed));
     log_info!(

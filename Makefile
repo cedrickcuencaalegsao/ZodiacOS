@@ -33,7 +33,7 @@ ISO_IMG    := $(BUILD_DIR)/zodiacos-v$(VERSION)-$(ARCH).iso
 ISO_ROOT   := $(BUILD_DIR)/iso-$(ARCH)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean clean-disk run run-hvf run-debug watch dirs \
+.PHONY: all clean clean-disk run run-hvf run-debug watch dirs net-info \
         iso iso-x86_64 iso-aarch64 iso-all iso-inspect _iso
 
 dirs:
@@ -87,13 +87,42 @@ endif
 SCREEN_W := $(word 1,$(subst x, ,$(SCREEN_SIZE)))
 SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
 
+# ---- Network (QEMU user-mode / SLIRP) -----------------------------------------
+# QEMU runs its own virtual LAN and NATs it out through your Mac's real
+# connection (WiFi or the USB ethernet dongle, it does not matter which).
+# The guest never sees the dongle. ZodiacOS only sees this virtual e1000 card.
+#
+# IMPORTANT: this Makefile only controls what QEMU offers. The kernel itself
+# must put these same values on eth0 (static config) or ask for them with a
+# DHCP client. Until it does, pings fail with "no route to host".
+#
+#   Guest IP    10.0.2.15   (also the first address QEMU's DHCP server hands out)
+#   Netmask     255.255.255.0
+#   Gateway     10.0.2.2    (QEMU answers ARP and ping for this itself)
+#   DNS         10.0.2.3
+#
+# Change the card with:  make run NIC=virtio-net-pci
+NIC          ?= e1000
+NET_SUBNET   := 10.0.2.0/24
+NET_GATEWAY  := 10.0.2.2
+NET_DNS      := 10.0.2.3
+NET_GUEST_IP := 10.0.2.15
+NET_PCAP     := $(BUILD_DIR)/net.pcap
+
+# One NIC only. Two -nic user,... lines create two separate networks that
+# both use 10.0.2.x, which is confusing when debugging.
+# filter-dump records every frame the guest sends/receives; open it in Wireshark.
+QEMU_NET := \
+	-netdev user,id=net0,net=$(NET_SUBNET),host=$(NET_GATEWAY),dns=$(NET_DNS),dhcpstart=$(NET_GUEST_IP) \
+	-device $(NIC),netdev=net0 \
+	-object filter-dump,id=dump0,netdev=net0,file=$(NET_PCAP)
+
 # COM1 output (slog!/log_info! in the kernel) goes to this terminal.
 # To keep the terminal quiet and read logs later, use instead:
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m 256M \
-	-nic user,model=e1000 \
-	-nic user,model=virtio-net-pci \
+	$(QEMU_NET) \
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
 	-display cocoa \
@@ -180,6 +209,19 @@ run-debug: $(DISK_IMG) $(DATA_IMG)
 	$(QEMU) $(QEMU_DRIVES) -d int,cpu_reset -no-reboot -D $(BUILD_DIR)/qemu.log
 	echo "Log written to $(BUILD_DIR)/qemu.log"
 
+# Prints the network values the kernel must use, and where the capture goes
+net-info:
+	echo ""
+	echo "  NIC model:   $(NIC)"
+	echo "  Guest IP:    $(NET_GUEST_IP)"
+	echo "  Netmask:     255.255.255.0  ($(NET_SUBNET))"
+	echo "  Gateway:     $(NET_GATEWAY)"
+	echo "  DNS:         $(NET_DNS)"
+	echo "  Capture:     $(NET_PCAP)  (open in Wireshark)"
+	echo ""
+	echo "  Test order inside ZodiacOS:  ping $(NET_GATEWAY)  then  ping 8.8.8.8"
+	echo ""
+
 run-hvf:
 	echo "run-hvf is only for ARCH=aarch64 (x86 guests can't use HVF on Apple Silicon)"
 
@@ -226,8 +268,8 @@ _iso: $(KERNEL_ELF)
 		"Run the kernel in QEMU:" \
 		"  qemu-system-aarch64 -M virt -m 256M -nographic -cpu cortex-a72 -kernel kernel-aarch64.elf" \
 		"" \
-		"This ISO is a container for the kernel. It is not UEFI-bootable yet, see README.txt inside"
-	> $(ISO_ROOT)/README.txt
+		"This ISO is a container for the kernel. It is not UEFI-bootable yet, see README.txt inside" \
+		> $(ISO_ROOT)/README.txt
 	xorriso -as mkisofs \
 		-V ZODIACOS \
 		-o $(ISO_IMG) \
@@ -250,6 +292,9 @@ run-hvf: $(KERNEL_ELF)
 run-debug: $(KERNEL_ELF)
 	$(QEMU) $(QEMU_MACHINE) -cpu cortex-a72 -d int,guest_errors -no-reboot -D $(BUILD_DIR)/qemu.log -kernel $(KERNEL_ELF)
 	echo "Log written to $(BUILD_DIR)/qemu.log"
+
+net-info:
+	echo "net-info is only for ARCH=x86_64 (the aarch64 virt target has no NIC configured yet)"
 
 endif
 

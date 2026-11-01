@@ -72,6 +72,7 @@ pub fn kernel_main() -> ! {
     console::splash::step(); // 3
     console::splash::hold(500);
     interrupts::init();
+    drivers::network::start();
     console::splash::step(); // 4
     console::splash::hold(500);
     scheduler::init();

@@ -5,6 +5,7 @@ use errors::Result;
 pub mod e1000;
 pub mod wifi;
 pub mod arp;
+pub mod dns;
 pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
@@ -52,7 +53,7 @@ pub fn list() -> Vec<Arc<dyn NetDevice>> {
 }
 
 use crate::drivers::network::{self as nic};
-use crate::{log_warn, process, scheduler};
+use crate::{log_info, log_warn, process, scheduler};
 
 #[derive(Clone, Copy)]
 pub struct Config {
@@ -84,8 +85,10 @@ pub fn interface() -> Option<Arc<dyn NetDevice>> {
 
 pub fn start() {
     if interface().is_none() {
+        log_warn!("network: no interface, net thread NOT started");
         return;
     }
+    log_info!("network: starting net thread");
     if let Err(e) = process::spawn("net", net_thread) {
         log_warn!("network: cannot start the network thread: {}", e);
     }
@@ -122,7 +125,14 @@ fn handle_frame(dev: &Arc<dyn NetDevice>, frame: &[u8]) {
     }
     match eth.ethertype {
         ethernet::ARP => arp::handle(dev, eth.payload),
-        ethernet::IPV4 => ipv4::handle(dev, eth.src, eth.payload),
+        ethernet::IPV4 => {
+            // DNS replies (UDP from port 53) are picked up here; everything else
+            // goes to the normal IPv4 handler (ICMP etc.)
+            if dns::handle_udp(eth.payload) {
+                return;
+            }
+            ipv4::handle(dev, eth.src, eth.payload)
+        }
         _ => {}
     }
 }
