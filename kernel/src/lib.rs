@@ -82,7 +82,7 @@ pub fn kernel_main() -> ! {
     console::splash::step(); // 6
 
     interrupts::enable();
-    console::splash::hold(3000);
+    console::splash::hold(1500);
     console::splash::finish(); // fill to 100%, flash, fade, clear
     log_info!("ZodiacOS kernel started");
 

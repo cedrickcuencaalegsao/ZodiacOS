@@ -44,6 +44,12 @@ pub fn register(device: Arc<dyn NetDevice>) {
     DEVICES.lock().push(device);
 }
 
+pub fn for_each_device(mut f: impl FnMut(&Arc<dyn NetDevice>)) {
+    for dev in DEVICES.lock().iter() { // use whatever static register() pushes into
+        f(dev);
+    }
+}
+
 pub fn get(name: &str) -> Option<Arc<dyn NetDevice>> {
     DEVICES.lock().iter().find(|d| d.name() == name).cloned()
 }

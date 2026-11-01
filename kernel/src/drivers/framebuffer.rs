@@ -292,6 +292,28 @@ pub fn pages() -> usize {
     super::bochs_vga::pages()
 }
 
+/// What the display looks like, for tools like tskmngr.
+#[derive(Clone, Copy)]
+pub struct FbInfo {
+    pub width: usize,
+    pub height: usize,
+    pub bpp: usize,
+    pub pitch: usize,
+    pub pages: usize,
+}
+
+/// None if no graphics mode was set up (system is still in VGA text mode).
+pub fn info() -> Option<FbInfo> {
+    let fb = get()?;
+    Some(FbInfo {
+        width: fb.width,
+        height: fb.height,
+        bpp: 32, // this driver is always 0x00RRGGBB
+        pitch: fb.pitch,
+        pages: pages(),
+    })
+}
+
 /// Makes screen `page` the one the monitor shows; drawing on the other page is invisible.
 pub fn show_page(page: usize) {
     super::bochs_vga::show_page(page)

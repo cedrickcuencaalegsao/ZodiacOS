@@ -1,6 +1,7 @@
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use shared::kassert;
+pub mod timer;
 
 pub const TIMER_HZ: u32 = 100; // 10 ms per tick
 

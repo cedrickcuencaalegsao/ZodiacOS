@@ -161,6 +161,11 @@ pub fn used() -> usize {
     ALLOCATOR.used.load(Relaxed)
 }
 
+/// Total heap capacity in bytes.
+pub fn size() -> usize {
+    HEAP_SIZE
+}
+
 /// Maps the heap's pages from fresh physical frames and hands them to the allocator.
 pub fn init() {
     let pml4 = paging::kernel_pml4();

@@ -241,3 +241,13 @@ pub fn snapshot() -> [Option<TaskInfo>; MAX_TASKS] {
         out
     })
 }
+
+pub fn for_each_task(mut f: impl FnMut(&Task)) {
+    with(|s| {
+        for (i, t) in s.tasks.iter().enumerate() {
+            if i != s.idle && t.state != State::Free {
+                f(t);
+            }
+        }
+    });
+}

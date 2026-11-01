@@ -279,6 +279,18 @@ fn execute(line: &str) {
         "ls" | "cd" | "pwd" | "cat" | "mkdir" | "touch" | "rm" | "rmdir" | "write" | "stat"
         | "mount" | "lsblk" => fscmd::run(parts[0], args),
         "ifconfig" | "ping" | "arp" | "wifi" => netcmd::run(parts[0], args),
+        "tskmngr" => {
+            use crate::console::{tskmngr, tskmngr_glue::*};
+            let read = crate::drivers::keyboard::try_read_key; // WIRE
+            match FbTerm::new(read) {
+                Some(mut term) => tskmngr::run(&mut ZodiacPlatform, &mut term),
+                None => {
+                    let mut term = VgaTerm::new(read);
+                    tskmngr::run(&mut ZodiacPlatform, &mut term);
+                }
+            }
+            // WIRE: redraw/clear your fbcon here, because tskmngr painted over it
+        }
 
         // Installed packages can't be launched yet (zpm_core has no launcher).
         other => kprintln!("{}: command not found (try 'help')", other),
@@ -392,6 +404,9 @@ fn help() {
     help_line("ping", "<a.b.c.d>", "send ICMP echo requests");
     help_line("arp", "", "show the ARP table");
     help_line("wifi", "[scan|connect|selftest]", "WiFi control");
+
+    help_heading("System");
+    help_line("tskmngr", "", "task manager (interactive)");
 
     vga::set_color(HELP_DESC);
     kprintln!("Installed packages can be run by name.");

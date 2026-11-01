@@ -1,4 +1,5 @@
 use crate::drivers::serial;
+use crate::console::tskmngr::Key;
 
 pub const KEY_UP: u8 = 0x80;
 pub const KEY_DOWN: u8 = 0x81;
@@ -215,4 +216,14 @@ pub fn flush() {
             break;
         }
     }
+}
+
+pub fn try_read_key() -> Option<Key> {
+    let c = read_char()?;
+    Some(match c {
+        27 => Key::Esc,
+        KEY_UP => Key::Up,
+        KEY_DOWN => Key::Down,
+        other => Key::Char(other),
+    })
 }

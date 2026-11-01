@@ -105,6 +105,13 @@ pub fn debug() -> String {
     )
 }
 
+/// Link state of the first card. Reads the STATUS register directly,
+/// so it never waits on the driver lock.
+pub fn link_up() -> bool {
+    let mmio = DEBUG_MMIO.load(Relaxed);
+    mmio != 0 && unsafe { ((mmio + STATUS) as *const u32).read_volatile() } & 2 != 0
+}
+
 struct Inner {
     mmio: usize,
     rx_ring: u64,

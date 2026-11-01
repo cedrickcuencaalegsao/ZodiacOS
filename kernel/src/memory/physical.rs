@@ -264,3 +264,14 @@ pub fn regions() -> ([Region; MAX_REGIONS], usize) {
     let p = PMM.lock();
     (p.regions, p.nregions)
 }
+
+pub fn total_bytes() -> u64 {
+    let (total, _) = stats();
+    total as u64 * FRAME_SIZE
+}
+
+/// Bytes currently handed out by the frame allocator.
+pub fn used_bytes() -> u64 {
+    let (total, free) = stats();
+    (total - free) as u64 * FRAME_SIZE
+}
