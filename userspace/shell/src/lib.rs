@@ -10,7 +10,7 @@ use alloc::{
 };
 use zodiac_abi::{Action, Console, DirEntry, Fs, Key};
 
-const HOME: &str = "/root";
+const HOME: &str = "/";
 
 /// (name, description)
 const PACKAGES: [(&str, &str); 3] = [

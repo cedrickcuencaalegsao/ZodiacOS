@@ -48,6 +48,9 @@ impl fmt::Write for ConsoleWriter {
 pub fn run() -> ! {
     let mut buf = [0u8; 128];
 
+    // start in the root directory instead of home
+    fscmd::run("cd", &["/"]);
+
     loop {
         print_prompt();
 
@@ -83,10 +86,12 @@ pub fn run() -> ! {
 fn print_prompt() {
     let u = user::get();
 
-    // "~" stands for the home directory
+    // "/" is the root, "~" stands for the home directory
     let cwd = file::getcwd();
     let home = filesystem::home_dir();
-    let shown = if cwd == home {
+    let shown = if cwd == "/" {
+        String::from("/")
+    } else if cwd == home {
         String::from("/~")
     } else if let Some(rest) = cwd
         .strip_prefix(home.as_str())
