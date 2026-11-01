@@ -21,6 +21,7 @@ endif
 # NOTE: DATA_SIZE only applies when the disk is created. To resize an existing
 # disk run:  qemu-img resize disk/data.qcow2 32G   (or make clean-disk)
 MEM       ?= 2G
+CPUS	  ?= 4
 DATA_SIZE ?= 24G
 
 # Read OS version directly from kernel/Cargo.toml
@@ -135,6 +136,7 @@ QEMU_NET := \
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
 	-m $(MEM) \
+	-smp $(CPUS) \
 	$(QEMU_NET) \
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
@@ -260,7 +262,7 @@ AA64_LD    := $(AA64_DIR)/linker.ld
 AA64_OBJS  := $(BUILD_DIR)/entry.o $(BUILD_DIR)/exception_vectors.o
 KERNEL_ELF := $(BUILD_DIR)/kernel-aarch64.elf
 
-QEMU_MACHINE := -M virt -m $(MEM) -nographic
+QEMU_MACHINE := -M virt -m $(MEM) -smp $(CPUS) -nographic
 
 all: $(KERNEL_ELF)
 	echo ""
