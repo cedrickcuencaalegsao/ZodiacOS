@@ -83,6 +83,7 @@ fn mode_string(kind: FileType, mode: u16) -> String {
     s
 }
 
+#[allow(dead_code)]
 fn print_long(name: &str, st: &Stat) {
     if st.kind == FileType::Directory {
         vga::set_color(0x0B);
@@ -297,9 +298,14 @@ fn print_items(items: &[Item], opts: Opts) {
 }
 
 fn owner(uid: u32) -> String {
-    if uid == 0 { String::from("root") } else { format!("{}", uid) }
+    if uid == 0 {
+        String::from("root")
+    } else {
+        format!("{}", uid)
+    }
 }
 
+#[allow(dead_code)]
 fn type_label(kind: FileType) -> &'static str {
     match kind {
         FileType::Directory => "dir",
@@ -328,6 +334,7 @@ fn fmt_size(bytes: u64, human: bool) -> String {
 }
 
 /// Unix seconds -> "YYYY-MM-DD HH:MM" (UTC)
+#[allow(dead_code)]
 fn fmt_time(ts: u64) -> String {
     if ts == 0 {
         return String::from("-");
