@@ -31,6 +31,7 @@ zodiac-desktop = { path = "../userspace/desktop" }
 zpm_core = { path = "zpm_core" }
 errors = { path = "errors" }
 shared = { path = "shared" }
+zedit = { path = "../packages/zedit" }
 
 [workspace]
 members = ["errors", "shared", "zpm_core"]

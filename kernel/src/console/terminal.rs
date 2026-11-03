@@ -291,6 +291,12 @@ fn execute(line: &str) {
             }
             // WIRE: redraw/clear your fbcon here, because tskmngr painted over it
         }
+        "zedit" => {
+            use crate::console::zedit_glue;
+            zedit_glue::run(args.first().copied());
+            // zedit painted over the screen, so repaint the shell
+            vga::clear();
+        }
 
         // Installed packages can't be launched yet (zpm_core has no launcher).
         other => kprintln!("{}: command not found (try 'help')", other),
@@ -377,6 +383,9 @@ fn help() {
     help_line("mount", "", "list mounted filesystems");
     help_line("lsblk", "", "list disks");
     help_line("format", "", "format hdb (erases everything)");
+
+    help_heading("Built-in Text editor");
+    help_line("zedit", "[file|.]", "text editor (.txt, .config)");
 
     help_heading("Memory:");
     help_line("meminfo", "", "physical memory and heap usage");
