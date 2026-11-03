@@ -37,11 +37,7 @@ pub(crate) use {
 // Genuinely x86 hardware: no aarch64 equivalent of these names
 #[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
-pub(crate) use {
-    arch::current::interrupts as idt,
-    drivers::rtc as time,
-    drivers::storage::ata,
-};
+pub(crate) use {arch::current::interrupts as idt, drivers::rtc as time, drivers::storage::ata};
 
 // The desktop, built from userspace/desktop for the ZodiacOS user target and embedded
 // in the kernel image for now. Adjust the path to where your build puts the binary.
