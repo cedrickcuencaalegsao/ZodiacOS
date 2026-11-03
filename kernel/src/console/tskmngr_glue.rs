@@ -86,8 +86,8 @@ impl Platform for ZodiacPlatform {
         MemInfo {
             total: crate::pmm::total_bytes(),
             used: crate::pmm::used_bytes(),
-            heap_total: crate::memory::heap::size() as u64,
-            heap_used: crate::memory::heap::used() as u64,
+            heap_total: crate::memory::allocator::size() as u64,
+            heap_used: crate::memory::allocator::used() as u64,
         }
     }
 

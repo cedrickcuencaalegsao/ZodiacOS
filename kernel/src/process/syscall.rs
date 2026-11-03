@@ -1,5 +1,6 @@
 use crate::filesystem::file;
-use crate::{interrupts, paging, scheduler};
+use crate::memory::{protection, virtual_memory as paging};
+use crate::{interrupts, scheduler};
 use alloc::{string::String, vec::Vec};
 use errors::Error;
 
@@ -135,7 +136,7 @@ fn check_user_buffer(ptr: u64, len: u64, writable: bool) -> Result<(), Error> {
         return Ok(());
     }
     let end = ptr.checked_add(len).ok_or(Error::BadAddress)?;
-    if ptr < paging::USER_BASE || end > paging::USER_END {
+    if ptr < paging::USER_BASE || end > paging::USER_LIMIT {
         return Err(Error::BadAddress);
     }
     let pml4 = paging::current();
@@ -158,7 +159,7 @@ fn path_from_user(ptr: u64) -> Result<String, Error> {
         if i == 0 || addr % 4096 == 0 {
             check_user_buffer(addr, 1, false)?;
         }
-        let byte = unsafe { *(addr as *const u8) };
+        let byte = protection::user_access(|| unsafe { (addr as *const u8).read_volatile() });
         if byte == 0 {
             return String::from_utf8(bytes).map_err(|_| Error::InvalidArgument);
         }
@@ -193,9 +194,9 @@ fn sys_write(fd: u64, ptr: u64, len: u64) -> Result<u64, Error> {
     while total < len {
         let n = ((len - total) as usize).min(512);
         // copy first, so the program can't change the bytes while we use them
-        unsafe {
+        protection::user_access(|| unsafe {
             core::ptr::copy_nonoverlapping((ptr + total) as *const u8, chunk.as_mut_ptr(), n)
-        };
+        });
         match file::write(fd as usize, &chunk[..n]) {
             Ok(written) => {
                 total += written as u64;
@@ -233,7 +234,9 @@ fn sys_read(fd: u64, ptr: u64, len: u64) -> Result<u64, Error> {
         if n == 0 {
             break;
         }
-        unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), (ptr + total) as *mut u8, n) };
+        protection::user_access(|| unsafe {
+            core::ptr::copy_nonoverlapping(chunk.as_ptr(), (ptr + total) as *mut u8, n)
+        });
         total += n as u64;
         if n < want {
             break;

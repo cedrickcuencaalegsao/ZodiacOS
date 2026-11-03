@@ -5,8 +5,11 @@ pub mod syscall;
 pub mod task;
 
 use crate::base::sync::Mutex;
+use crate::memory::security::{MapError, Perm};
+use crate::memory::virtual_memory as paging;
+use crate::memory::physical as pmm;
 use crate::scheduler::{self, MAX_TASKS};
-use crate::{arch, paging, pmm, vga};
+use crate::{arch, vga};
 use crate::{kprintln, slogln};
 use errors::Error;
 use shared::kassert;
@@ -50,10 +53,9 @@ pub fn stack_guard_slot(addr: u64) -> Option<usize> {
 }
 
 fn unmap_stack_locked(slot: usize) {
-    let pml4 = paging::kernel_pml4();
     let base = stack_base(slot);
     for page in 0..STACK_PAGES {
-        if let Some(frame) = paging::unmap_page(pml4, base + (page + 1) * 4096) {
+        if let Some(frame) = paging::kernel_unmap(base + (page + 1) * 4096) {
             pmm::free_frame(frame);
         }
     }
@@ -68,21 +70,14 @@ fn unmap_stack(slot: usize) {
 /// Returns the stack top.
 fn map_stack(slot: usize) -> Result<u64, Error> {
     let _lock = STACK_LOCK.lock();
-    let pml4 = paging::kernel_pml4();
     let base = stack_base(slot);
     for page in 0..STACK_PAGES {
-        let Some(frame) = pmm::alloc_frame() else {
+        // zeroed, so a new stack never exposes what a previous owner left in the frame
+        let Some(frame) = pmm::alloc_zeroed() else {
             unmap_stack_locked(slot);
             return Err(Error::OutOfMemory);
         };
-        if paging::map_page(
-            pml4,
-            base + (page + 1) * 4096,
-            frame,
-            paging::WRITABLE | paging::NX,
-        )
-        .is_err()
-        {
+        if paging::kernel_map(base + (page + 1) * 4096, frame, Perm::KERNEL_RW).is_err() {
             pmm::free_frame(frame);
             unmap_stack_locked(slot);
             return Err(Error::OutOfMemory);
@@ -165,12 +160,21 @@ pub fn spawn(name: &str, entry: fn()) -> Result<u32, Error> {
     create(name, Entry::Kernel(entry), 0, true).map(|(_, pid)| pid)
 }
 
-/// Allocates a frame, maps it in `space` and returns its physical address.
-fn map_user_page(space: u64, virt: u64, flags: u64) -> Result<u64, Error> {
+fn map_error(e: MapError) -> Error {
+    match e {
+        MapError::OutOfFrames => Error::OutOfMemory,
+        // W^X violation, overlapping segments, address outside user space...
+        _ => Error::InvalidExecutable,
+    }
+}
+
+/// Allocates a zeroed frame, maps it in `space` with `perm` and returns its physical address.
+/// The frame belongs to the address space from then on and is freed with it.
+fn map_user_page(space: u64, virt: u64, perm: Perm) -> Result<u64, Error> {
     let frame = pmm::alloc_zeroed().ok_or(Error::OutOfMemory)?;
-    if paging::map_page(space, virt, frame, flags).is_err() {
-        pmm::free_frame(frame);
-        return Err(Error::OutOfMemory);
+    if let Err(e) = paging::map_page(space, virt, frame, perm) {
+        pmm::free_frame(frame); // not mapped, so we still own it
+        return Err(map_error(e));
     }
     Ok(frame)
 }
@@ -186,14 +190,16 @@ pub fn spawn_user(name: &str, program: &[u8]) -> Result<u32, Error> {
     let space = paging::new_address_space().ok_or(Error::OutOfMemory)?;
 
     let setup = (|| -> Result<(), Error> {
-        // not writable: user code can't modify itself
-        let code = map_user_page(space, USER_CODE, paging::USER)?;
-        unsafe { core::ptr::copy_nonoverlapping(program.as_ptr(), code as *mut u8, program.len()) };
-        map_user_page(
-            space,
-            USER_STACK,
-            paging::USER | paging::WRITABLE | paging::NX,
-        )?;
+        // read + execute, not writable: user code can't modify itself
+        let code = map_user_page(space, USER_CODE, Perm::USER_RX)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                program.as_ptr(),
+                paging::phys_to_virt(code) as *mut u8,
+                program.len(),
+            )
+        };
+        map_user_page(space, USER_STACK, Perm::USER_RW)?;
         Ok(())
     })();
     if let Err(e) = setup {
@@ -240,8 +246,9 @@ fn rd64(b: &[u8], o: usize) -> Option<u64> {
 /// Requirements on the program: statically linked, non-PIE ELF64 for x86_64, linked at or
 /// above `paging::USER_BASE`, with every segment starting on its own 4 KiB page
 /// (use `ALIGN(4096)` between sections in the linker script).
+/// A segment that is both writable and executable is rejected (W^X).
 fn load_elf(space: u64, image: &[u8]) -> Result<u64, Error> {
-    let bad = || Error::InvalidExecutable; // add this variant to base::error::Error
+    let bad = || Error::InvalidExecutable;
 
     // magic, ELFCLASS64, little-endian, machine = x86_64
     if image.get(0..4) != Some(&[0x7F, b'E', b'L', b'F'][..])
@@ -280,17 +287,17 @@ fn load_elf(space: u64, image: &[u8]) -> Result<u64, Error> {
             .get(offset..offset.checked_add(filesz).ok_or_else(bad)?)
             .ok_or_else(bad)?;
 
-        let mut pflags = paging::USER;
-        if flags & PF_W != 0 {
-            pflags |= paging::WRITABLE;
-        }
-        if flags & PF_X == 0 {
-            pflags |= paging::NX;
-        }
+        // W+X is refused later by Perm::leaf_flags (-> InvalidExecutable)
+        let perm = Perm {
+            write: flags & PF_W != 0,
+            exec: flags & PF_X != 0,
+            user: true,
+            uncached: false,
+        };
 
         let mut page = vaddr & !0xFFF;
         while page < end {
-            let frame = map_user_page(space, page, pflags)?; // zeroed, so .bss comes for free
+            let frame = map_user_page(space, page, perm)?; // zeroed, so .bss comes for free
             // copy the part of the file data that lands in this page
             let lo = core::cmp::max(page, vaddr);
             let hi = core::cmp::min(page + 4096, vaddr + filesz as u64);
@@ -298,7 +305,7 @@ fn load_elf(space: u64, image: &[u8]) -> Result<u64, Error> {
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         data.as_ptr().add((lo - vaddr) as usize),
-                        (frame + (lo - page)) as *mut u8,
+                        paging::phys_to_virt(frame + (lo - page)) as *mut u8,
                         (hi - lo) as usize,
                     );
                 }
@@ -308,11 +315,7 @@ fn load_elf(space: u64, image: &[u8]) -> Result<u64, Error> {
     }
 
     for p in 0..USER_STACK_PAGES {
-        map_user_page(
-            space,
-            stack_bottom + p * 4096,
-            paging::USER | paging::WRITABLE | paging::NX,
-        )?;
+        map_user_page(space, stack_bottom + p * 4096, Perm::USER_RW)?;
     }
     Ok(entry)
 }

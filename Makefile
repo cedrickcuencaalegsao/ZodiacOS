@@ -20,7 +20,7 @@ endif
 # guest writes to it, so 24G does not use 24G of your Mac's storage.
 # NOTE: DATA_SIZE only applies when the disk is created. To resize an existing
 # disk run:  qemu-img resize disk/data.qcow2 32G   (or make clean-disk)
-MEM       ?= 2G
+MEM       ?= 4G
 CPUS	  ?= 4
 DATA_SIZE ?= 24G
 

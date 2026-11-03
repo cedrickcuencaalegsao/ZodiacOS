@@ -1,3 +1,5 @@
+use super::security::POLICY;
+use super::virtual_memory::phys_to_virt;
 use crate::sync::IrqSpinLock;
 use core::ptr;
 use shared::kassert;
@@ -6,8 +8,6 @@ pub const FRAME_SIZE: u64 = 4096;
 
 const MEMMAP_ADDR: usize = 0x4000; // written by boot.asm
 const MAX_REGIONS: usize = 32;
-// const BITMAP_ADDR: usize = 0x10_0000;   // 1 MiB, inside the boot identity map
-// const RESERVED_BELOW: usize = 0x10_0000; // BIOS data, kernel image, stack, VGA: never handed out
 const MAX_FRAMES: usize = 1 << 20; // tracks up to 4 GiB of RAM
 
 unsafe extern "C" {
@@ -138,7 +138,10 @@ fn reserve(p: &mut Pmm, from: usize, to: usize) {
     }
 }
 
-/// Reads the BIOS memory map and builds the frame bitmap.
+fn zero_frame(addr: u64) {
+    unsafe { ptr::write_bytes(phys_to_virt(addr) as *mut u8, 0, FRAME_SIZE as usize) };
+}
+
 /// Reads the BIOS memory map and builds the frame bitmap.
 pub fn init() {
     let count = unsafe { ptr::read_volatile(MEMMAP_ADDR as *const u32) } as usize;
@@ -211,9 +214,10 @@ pub fn alloc_contiguous(count: usize) -> Option<u64> {
     p.alloc(count).map(|f| f as u64 * FRAME_SIZE)
 }
 
+/// One frame, zero-filled. Use this for page tables.
 pub fn alloc_zeroed() -> Option<u64> {
     let addr = alloc_frame()?;
-    unsafe { ptr::write_bytes(addr as *mut u8, 0, FRAME_SIZE as usize) };
+    zero_frame(addr);
     Some(addr)
 }
 
@@ -236,6 +240,13 @@ pub fn free_frame(addr: u64) {
         addr
     );
     kassert!(p.test(i), "double free of frame {:#x}", addr);
+
+    // Scrub before the frame becomes allocatable again (after the checks, so a
+    // bad address is never written to).
+    if POLICY.zero_on_free {
+        zero_frame(addr);
+    }
+
     p.clear(i);
     p.free += 1;
     if i < p.hint {

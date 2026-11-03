@@ -54,9 +54,11 @@ pub(crate) use {arch::current::interrupts as idt, drivers::rtc as time, drivers:
 const INIT_STEPS: usize = 6; // memory, drivers, fs, interrupts, scheduler, process
 
 pub fn kernel_main() -> ! {
+    // after
     if let Err(e) = memory::init() {
-        panic!("memory init failed: {}", e);
+        panic!("memory init failed: {:?}", e);
     }
+    memory::selftest();
     drivers::init(); // framebuffer comes up here
     console::splash::begin(INIT_STEPS, 2); // memory + drivers already done
     console::splash::hold(1500);

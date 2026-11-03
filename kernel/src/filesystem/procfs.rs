@@ -1,7 +1,7 @@
 use super::inode::{DirEntry, FileType, Inode, Stat};
 use super::mount;
 use crate::process::task;
-use crate::{heap, interrupts, pmm, scheduler};
+use crate::{interrupts, pmm, scheduler};
 use alloc::{format, string::String, sync::Arc, vec::Vec};
 use errors::{Error, Result};
 
@@ -26,8 +26,8 @@ fn meminfo() -> String {
         "MemTotal: {} kB\nMemFree: {} kB\nHeapTotal: {} kB\nHeapUsed: {} kB\n",
         total * 4,
         free * 4,
-        heap::HEAP_SIZE / 1024,
-        heap::used() / 1024
+        crate::memory::allocator::size() / 1024,
+        crate::memory::allocator::used() / 1024
     )
 }
 

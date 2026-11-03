@@ -1,5 +1,8 @@
-use crate::paging::{self, Mapping};
-use crate::{heap, pmm};
+use crate::memory::{
+    allocator, heap, layout, physical, protection,
+    security::Perm,
+    virtual_memory::{self as vm, AddressSpace, Mapping, USER_BASE},
+};
 use crate::{kprint, kprintln};
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 
@@ -19,7 +22,7 @@ fn mib(frames: usize) -> usize {
 }
 
 fn meminfo() {
-    let (total, free) = pmm::stats();
+    let (total, free) = physical::stats();
     kprintln!(
         "Physical memory  {} MiB usable, {} MiB in use, {} MiB free ({} frames)",
         mib(total),
@@ -30,13 +33,13 @@ fn meminfo() {
     kprintln!(
         "Kernel heap      {} KiB total, {} bytes in use",
         heap::HEAP_SIZE / 1024,
-        heap::used()
+        allocator::used()
     );
-    kprintln!("Page tables      CR3 = {:#x}", paging::current());
+    kprintln!("Page tables      CR3 = {:#x}", vm::current());
 }
 
 fn memmap() {
-    let (regions, count) = pmm::regions();
+    let (regions, count) = physical::regions();
     kprintln!("{:<20} {:<20} {}", "START", "END", "TYPE");
     for r in &regions[..count] {
         kprintln!("{:#018x}   {:#018x}   {}", r.base, r.base + r.len, r.kind_name());
@@ -53,7 +56,7 @@ fn perms(m: &Mapping) -> &'static str {
 }
 
 fn describe(pml4: u64, virt: u64) {
-    match paging::translate(pml4, virt) {
+    match vm::translate(pml4, virt) {
         Some(m) => kprintln!(
             "{:#x} -> {:#x}  {}  {}  ({} KiB page)",
             virt,
@@ -71,13 +74,13 @@ fn vmem(args: &[&str]) {
         .first()
         .and_then(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok());
     match addr {
-        Some(a) => describe(paging::current(), a),
+        Some(a) => describe(vm::current(), a),
         None => kprintln!("usage: vmem <hex address>   e.g. vmem 0xb8000"),
     }
 }
 
 fn memtest() {
-    let before = heap::used();
+    let before = allocator::used();
 
     let mut squares: Vec<u64> = Vec::new();
     for i in 0..1000u64 {
@@ -90,7 +93,7 @@ fn memtest() {
     kprintln!("{}", text);
     kprintln!(
         "heap in use: {} bytes (was {}), 4 KiB block at {:p}",
-        heap::used(),
+        allocator::used(),
         before,
         block.as_ref()
     );
@@ -98,40 +101,46 @@ fn memtest() {
     drop(squares);
     drop(text);
     drop(block);
-    kprintln!("after freeing: {} bytes", heap::used());
+    kprintln!("after freeing: {} bytes", allocator::used());
 }
 
 /// Builds a second address space, maps a page into it, reads it back, destroys it.
 fn vmtest() {
-    let Some(space) = paging::new_address_space() else {
-        kprintln!("vmtest: out of memory");
-        return;
+    let mut space = match AddressSpace::new_user() {
+        Ok(s) => s,
+        Err(e) => {
+            kprintln!("vmtest: cannot create address space: {:?}", e);
+            return;
+        }
     };
-    let Some(frame) = pmm::alloc_frame() else {
+    let Some(frame) = physical::alloc_frame() else {
         kprintln!("vmtest: out of memory");
-        paging::destroy_address_space(space);
-        return;
+        return; // `space` is dropped here and frees its tables
     };
-    let flags = paging::USER | paging::WRITABLE | paging::NX;
-    if let Err(e) = paging::map_page(space, paging::USER_BASE, frame, flags) {
-        kprintln!("vmtest: map failed: {}", e);
-        pmm::free_frame(frame);
-        paging::destroy_address_space(space);
+    if let Err(e) = space.map_4k(USER_BASE, frame, Perm::USER_RW) {
+        kprintln!("vmtest: map failed: {:?}", e);
+        physical::free_frame(frame); // not mapped, so we still own it
         return;
     }
-    unsafe { (frame as *mut u64).write(0xC0FFEE) };
+    // From here on the frame belongs to `space` and is freed when it is dropped.
+    unsafe { (vm::phys_to_virt(frame) as *mut u64).write(0xC0FFEE) };
 
-    kprint!("user page:   ");
-    describe(space, paging::USER_BASE);
-    kprint!("kernel code: ");
-    describe(space, 0x10000);
+    let kernel = vm::current();
+    kprint!("user page (new space):   ");
+    describe(space.root(), USER_BASE);
+    kprint!("user page (kernel view): ");
+    describe(kernel, USER_BASE);
+    kprint!("kernel code (new space): ");
+    describe(space.root(), layout::text_start());
 
-    let old = paging::current();
-    paging::activate(space);
-    let value = unsafe { core::ptr::read_volatile(paging::USER_BASE as *const u64) };
-    paging::activate(old);
+    unsafe { space.activate() };
+    // SMAP makes the kernel fault on user pages unless access is opened explicitly.
+    let value = protection::user_access(|| unsafe {
+        core::ptr::read_volatile(USER_BASE as *const u64)
+    });
+    unsafe { vm::load_cr3(kernel) };
     kprintln!("read through the new address space: {:#x} (expected 0xc0ffee)", value);
 
-    paging::destroy_address_space(space);
+    drop(space);
     kprintln!("address space destroyed");
 }

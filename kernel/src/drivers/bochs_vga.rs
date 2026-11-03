@@ -1,7 +1,7 @@
 use super::framebuffer::Framebuffer;
 use super::pci::{self, Bar};
 use crate::arch::{inw, outw};
-use crate::paging;
+use crate::memory::virtual_memory as paging;
 use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 const VBE_INDEX: u16 = 0x01CE;
