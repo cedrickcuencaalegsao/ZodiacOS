@@ -53,6 +53,12 @@ start:
 
     mov [boot_drive], dl        ; BIOS passes the boot drive in DL
 
+    ; ---- Check there is enough conventional memory for the kernel image ----
+    ; INT 0x12 returns the KB of conventional memory (the EBDA may start below 0x9FC00)
+    int  0x12                   ; AX = KB of conventional memory
+    cmp  ax, (LOAD_ADDR + KERNEL_SECTORS * 512 + 1023) / 1024
+    jb   disk_error
+
     ; ---- Ask the BIOS for the physical memory map (INT 0x15, EAX=0xE820) ----
     xor  ebx, ebx               ; continuation value, 0 = first call
     xor  bp, bp                 ; entry count
@@ -76,13 +82,22 @@ start:
     mov  [MEMMAP_ADDR], bp
     mov  word [MEMMAP_ADDR + 2], 0
 
-    ; ---- Load the kernel in chunks with BIOS extended read (LBA) ----
+    ; ---- Load the kernel in chunks with BIOS extended read (LBA), retrying on error ----
 .load:
+    mov  cx, 3                  ; attempts per chunk
+.retry:
     mov  si, dap
     mov  dl, [boot_drive]
     mov  ah, 0x42
     int  0x13
-    jc   disk_error
+    jnc  .ok
+    xor  ah, ah                 ; reset the disk system and try again
+    mov  dl, [boot_drive]
+    int  0x13
+    dec  cx
+    jnz  .retry
+    jmp  disk_error
+.ok:
     add  word  [dap_seg], CHUNK * 512 / 16      ; advance destination
     add  dword [dap_lba], CHUNK                 ; advance source sector
     dec  byte  [chunks_left]
@@ -94,6 +109,16 @@ start:
     or   al, 2
     and  al, 0xFE               ; never set bit 0 (it resets the CPU)
     out  0x92, al
+
+    ; ---- Make sure the CPU supports long mode, otherwise we would triple fault ----
+    mov  eax, 0x80000000
+    cpuid
+    cmp  eax, 0x80000001
+    jb   disk_error
+    mov  eax, 0x80000001
+    cpuid
+    bt   edx, 29                ; LM bit
+    jnc  disk_error
 
     jmp  enter_long_mode        ; defined in long_mode.asm
 
