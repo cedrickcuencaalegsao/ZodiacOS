@@ -2,11 +2,11 @@ pub mod policy;
 pub mod run_queue;
 
 use crate::base::sync::IrqSpinLock;
-use crate::kassert;
 use crate::process::context::zodiac_switch;
 use crate::process::task::{Entry, State, Task};
 use crate::{arch, interrupts, paging};
 use run_queue::RunQueue;
+use shared::kassert;
 
 pub const MAX_TASKS: usize = 32;
 
@@ -76,7 +76,11 @@ impl Sched {
         Some(Switch {
             old_rsp: &mut self.tasks[cur].rsp as *mut u64,
             new_rsp,
-            cr3: if space == 0 { paging::kernel_pml4() } else { space },
+            cr3: if space == 0 {
+                paging::kernel_pml4()
+            } else {
+                space
+            },
             kstack_top,
         })
     }
@@ -110,7 +114,7 @@ pub fn init() {
         *boot = Task::EMPTY;
         boot.state = State::Running;
         boot.set_name("kernel");
-        boot.kstack_top = 0x90000; // the boot stack
+        boot.kstack_top = arch::BOOT_KSTACK_TOP; // the boot stack
         boot.slice_left = policy::new_slice();
         s.current = 0;
         s.ready = true;
@@ -135,7 +139,7 @@ pub fn schedule() {
     let switch = SCHED.raw().lock().pick_next();
 
     if let Some(sw) = switch {
-        arch::current::gdt::set_kernel_stack(sw.kstack_top);
+        arch::set_kernel_stack(sw.kstack_top);
         if paging::current() != sw.cr3 {
             paging::activate(sw.cr3);
         }
@@ -159,7 +163,10 @@ pub fn tick(now: u64) {
 }
 
 pub fn sleep_ms(ms: u64) {
-    kassert!(arch::interrupts_enabled(), "sleep_ms with interrupts disabled would hang");
+    kassert!(
+        arch::interrupts_enabled(),
+        "sleep_ms with interrupts disabled would hang"
+    );
     let ticks = ((ms * interrupts::TIMER_HZ as u64 + 999) / 1000).max(1);
     with(|s| {
         let cur = s.current;
@@ -233,4 +240,14 @@ pub fn snapshot() -> [Option<TaskInfo>; MAX_TASKS] {
         }
         out
     })
+}
+
+pub fn for_each_task(mut f: impl FnMut(&Task)) {
+    with(|s| {
+        for (i, t) in s.tasks.iter().enumerate() {
+            if i != s.idle && t.state != State::Free {
+                f(t);
+            }
+        }
+    });
 }

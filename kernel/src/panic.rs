@@ -1,8 +1,9 @@
-use crate::{arch, assertions, keyboard, vga};
+use crate::{arch, keyboard, vga};
 use crate::{kprintln, slogln};
 use core::arch::asm;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use shared::assertions;
 
 static PANICKING: AtomicBool = AtomicBool::new(false);
 
@@ -10,6 +11,7 @@ const PANIC_ATTR: u8 = 0x4F; // white on red
 const TITLE_ATTR: u8 = 0x4E; // yellow on red
 
 #[panic_handler]
+#[cfg(target_arch = "x86_64")]
 fn panic(info: &PanicInfo) -> ! {
     unsafe { asm!("cli") };
 

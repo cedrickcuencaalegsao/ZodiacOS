@@ -2,9 +2,10 @@ use crate::console::netcmd;
 use crate::console::{fscmd, hwcmd, memcmd, taskcmd, zpm_cmd};
 use crate::filesystem::{self, file};
 use crate::{arch, fs, interrupts, keyboard, user, vga};
-use crate::{kassert_eq, kprint, kprintln};
+use crate::{kprint, kprintln};
 use alloc::{format, string::String};
 use core::fmt;
+use shared::kassert_eq;
 
 use zpm_core::{Package, PackageKind, PackageSpace, Registry, Version};
 
@@ -47,6 +48,9 @@ impl fmt::Write for ConsoleWriter {
 pub fn run() -> ! {
     let mut buf = [0u8; 128];
 
+    // start in the root directory instead of home
+    fscmd::run("cd", &["/"]);
+
     loop {
         print_prompt();
 
@@ -82,10 +86,12 @@ pub fn run() -> ! {
 fn print_prompt() {
     let u = user::get();
 
-    // "~" stands for the home directory
+    // "/" is the root, "~" stands for the home directory
     let cwd = file::getcwd();
     let home = filesystem::home_dir();
-    let shown = if cwd == home {
+    let shown = if cwd == "/" {
+        String::from("/")
+    } else if cwd == home {
         String::from("/~")
     } else if let Some(rest) = cwd
         .strip_prefix(home.as_str())
@@ -108,6 +114,51 @@ fn print_prompt() {
     kprint!("> ");
 }
 
+#[cfg(target_arch = "x86_64")]
+const ARCH_NAME: &str = "x86_64";
+#[cfg(target_arch = "aarch64")]
+const ARCH_NAME: &str = "aarch64";
+
+// Must be unmapped. 0x4000_0000 is RAM on QEMU's aarch64 `virt` board, so it would not fault there.
+#[cfg(target_arch = "x86_64")]
+const PF_ADDR: usize = 0x4000_0000;
+#[cfg(target_arch = "aarch64")]
+const PF_ADDR: usize = 0x0000_1000_0000_0000;
+
+fn crash_undefined() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("ud2")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("udf #0")
+    };
+}
+
+fn crash_breakpoint() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("int3")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0")
+    };
+}
+
+fn crash_div() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "xor edx, edx", "mov eax, 1", "xor ecx, ecx", "div ecx",
+            out("rax") _, out("rcx") _, out("rdx") _
+        )
+    };
+    #[cfg(target_arch = "aarch64")]
+    kprintln!("div: integer division by zero does not trap on aarch64 (result is 0)");
+}
+
 fn execute(line: &str) {
     let mut parts = [""; 8];
     let mut argc = 0;
@@ -124,7 +175,7 @@ fn execute(line: &str) {
 
     match parts[0] {
         "help" => help(),
-        "clear" => vga::clear(),
+        "clear" | "cls" => vga::clear(),
         "echo" => {
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
@@ -134,7 +185,7 @@ fn execute(line: &str) {
             }
             kprintln!();
         }
-        "about" | "version" => kprintln!("ZodiacOS 0.1.0 (x86_64)"),
+        "about" | "version" => kprintln!("ZodiacOS 0.1.0 ({})", ARCH_NAME),
         "reboot" | "restart" => {
             vga::set_color(0x0E);
             kprintln!("Restarting ZodiacOS...");
@@ -206,16 +257,11 @@ fn execute(line: &str) {
                 let n = args.len();
                 kassert_eq!(n, 99);
             }
-            Some("ud") => unsafe { core::arch::asm!("ud2") },
+            Some("ud") => crash_undefined(),
             Some("pf") => unsafe {
-                let _ = core::ptr::read_volatile(0x4000_0000 as *const u8);
+                let _ = core::ptr::read_volatile(PF_ADDR as *const u8);
             },
-            Some("div") => unsafe {
-                core::arch::asm!(
-                    "xor edx, edx", "mov eax, 1", "xor ecx, ecx", "div ecx",
-                    out("eax") _, out("ecx") _, out("edx") _
-                )
-            },
+            Some("div") => crash_div(),
             Some("null") => unsafe {
                 let _ = core::ptr::read_volatile(0x10 as *const u8);
             },
@@ -223,7 +269,7 @@ fn execute(line: &str) {
                 // the shell's own machine code lives in read-only pages
                 core::ptr::write_volatile(execute as *const () as *mut u8, 0);
             },
-            Some("bp") => unsafe { core::arch::asm!("int3") },
+            Some("bp") => crash_breakpoint(),
             Some("stack") => taskcmd::overflow_test(),
             _ => kprintln!("usage: crash <panic|assert|ud|pf|div|null|write|bp|stack>"),
         },
@@ -233,6 +279,18 @@ fn execute(line: &str) {
         "ls" | "cd" | "pwd" | "cat" | "mkdir" | "touch" | "rm" | "rmdir" | "write" | "stat"
         | "mount" | "lsblk" => fscmd::run(parts[0], args),
         "ifconfig" | "ping" | "arp" | "wifi" => netcmd::run(parts[0], args),
+        "tskmngr" => {
+            use crate::console::{tskmngr, tskmngr_glue::*};
+            let read = crate::drivers::keyboard::try_read_key; // WIRE
+            match FbTerm::new(read) {
+                Some(mut term) => tskmngr::run(&mut ZodiacPlatform, &mut term),
+                None => {
+                    let mut term = VgaTerm::new(read);
+                    tskmngr::run(&mut ZodiacPlatform, &mut term);
+                }
+            }
+            // WIRE: redraw/clear your fbcon here, because tskmngr painted over it
+        }
 
         // Installed packages can't be launched yet (zpm_core has no launcher).
         other => kprintln!("{}: command not found (try 'help')", other),
@@ -346,6 +404,9 @@ fn help() {
     help_line("ping", "<a.b.c.d>", "send ICMP echo requests");
     help_line("arp", "", "show the ARP table");
     help_line("wifi", "[scan|connect|selftest]", "WiFi control");
+
+    help_heading("System");
+    help_line("tskmngr", "", "task manager (interactive)");
 
     vga::set_color(HELP_DESC);
     kprintln!("Installed packages can be run by name.");

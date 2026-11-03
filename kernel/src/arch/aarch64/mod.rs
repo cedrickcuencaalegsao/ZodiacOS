@@ -1,5 +1,7 @@
 pub mod cpu;
 pub mod exceptions;
+pub mod paging;
+pub mod context;
 
 use core::fmt;
 

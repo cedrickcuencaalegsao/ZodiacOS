@@ -1,6 +1,6 @@
 #![allow(dead_code)]
-use crate::base::error::{Error, Result};
 use alloc::{string::String, sync::Arc, vec::Vec};
+use errors::{Error, Result};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FileType {

@@ -1,6 +1,6 @@
-use crate::kassert;
 use crate::sync::IrqSpinLock;
 use core::ptr;
+use shared::kassert;
 
 pub const FRAME_SIZE: u64 = 4096;
 
@@ -263,4 +263,15 @@ pub fn max_phys() -> u64 {
 pub fn regions() -> ([Region; MAX_REGIONS], usize) {
     let p = PMM.lock();
     (p.regions, p.nregions)
+}
+
+pub fn total_bytes() -> u64 {
+    let (total, _) = stats();
+    total as u64 * FRAME_SIZE
+}
+
+/// Bytes currently handed out by the frame allocator.
+pub fn used_bytes() -> u64 {
+    let (total, free) = stats();
+    (total - free) as u64 * FRAME_SIZE
 }

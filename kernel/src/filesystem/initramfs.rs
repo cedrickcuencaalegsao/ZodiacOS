@@ -1,7 +1,7 @@
 use super::vfs;
-use crate::base::error::{Error, Result};
 use crate::drivers::storage;
 use alloc::{format, string::String, vec::Vec};
+use errors::{Error, Result};
 
 /// Where the archive starts on the boot disk (see the Makefile). The first sector is
 /// a header: "ZINI" + the archive length as a little-endian u32. The archive follows.

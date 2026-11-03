@@ -4,11 +4,18 @@ pub mod heap;
 pub mod physical;
 pub mod virtual_memory;
 
-use crate::base::error::Error;
+use errors::Error;
 
 pub fn init() -> Result<(), Error> {
     physical::init();
     virtual_memory::init();
+
+    #[cfg(target_arch = "aarch64")]
+    virtual_memory::set_frame_allocator(
+        || physical::alloc_frame(),
+        |p| physical::free_frame(p),
+    );
+
     heap::init();
     let (total, free) = physical::stats();
     if total == 0 || free == 0 {

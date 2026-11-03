@@ -1,4 +1,4 @@
-use crate::base::error::error_enum::Error;
+use crate::error_enum::Error;
 
 impl Error {
     pub fn errno(self) -> i32 {

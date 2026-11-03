@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use crate::arch::{inb, inw, outb, outw};
-use crate::kassert;
+use shared::kassert;
 
 #[derive(Clone, Copy)]
 pub struct DriveInfo {
@@ -141,9 +141,9 @@ pub fn write_sector(drive: u8, lba: u32, buf: &[u8; 512]) -> bool {
 }
 
 // ---- BlockDevice front end ----------------------------------------------------
-use crate::base::error::{Error, Result};
 use crate::base::sync::Mutex;
 use alloc::{string::String, sync::Arc};
+use errors::{Error, Result};
 
 /// One ATA command at a time, whichever drive it targets: the two drives of a
 /// channel share registers, so commands must not interleave.

@@ -1,11 +1,15 @@
 // #![allow(dead_code)]
-use super::{register, MacAddr, NetDevice, NetStats};
-use crate::base::error::{Error, Result};
+use super::{MacAddr, NetDevice, NetStats, register};
 use crate::base::sync::Mutex;
 use crate::drivers::pci::{Bar, PciDevice};
 use crate::{log_info, paging, pmm};
 use alloc::{format, string::String, sync::Arc};
-use core::sync::atomic::{fence, AtomicU64, AtomicUsize, Ordering::{Relaxed, SeqCst}};
+use core::sync::atomic::{
+    AtomicU64, AtomicUsize,
+    Ordering::{Relaxed, SeqCst},
+    fence,
+};
+use errors::{Error, Result};
 
 const INTEL: u16 = 0x8086;
 const MODELS: [u16; 2] = [0x100E, 0x100F]; // 82540EM (QEMU's default NIC), 82545EM
@@ -33,6 +37,12 @@ const MTA: usize = 0x5200; // multicast table, 128 dwords
 const RAL0: usize = 0x5400;
 const RAH0: usize = 0x5404;
 
+// Hardware statistics registers. These CLEAR when read, so debug() below
+// adds each read to a running total instead of showing the raw value.
+const MPC: usize = 0x4010; // missed packets (no free RX descriptor)
+const GPRC: usize = 0x4074; // good packets received
+const GPTC: usize = 0x4080; // good packets transmitted
+
 const CTRL_LRST: u32 = 1 << 3;
 const CTRL_ASDE: u32 = 1 << 5; // auto speed detection
 const CTRL_SLU: u32 = 1 << 6; // set link up
@@ -50,8 +60,56 @@ const BUF_SIZE: usize = 2048;
 
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 
+// Debug support: base address of the (first) card's registers, plus running
+// totals of the clear-on-read hardware counters.
+static DEBUG_MMIO: AtomicUsize = AtomicUsize::new(0);
+static HW_RX_GOOD: AtomicU64 = AtomicU64::new(0);
+static HW_TX_GOOD: AtomicU64 = AtomicU64::new(0);
+static HW_MISSED: AtomicU64 = AtomicU64::new(0);
+
 pub fn matches(dev: &PciDevice) -> bool {
     dev.vendor == INTEL && MODELS.contains(&dev.device)
+}
+
+/// What the card itself reports, independent of our own software counters.
+/// Call it from `ifconfig` (e.g. `e1000::debug()`), then print the string.
+///
+///   tx_good stays 0                  -> the card is not transmitting
+///   tx_good > 0, rx_good = 0         -> frames left, nothing came back
+///   rx_good > 0 or rx head moved     -> the card received data, so the bug
+///                                       is in software (polling / ARP reply)
+pub fn debug() -> String {
+    let mmio = DEBUG_MMIO.load(Relaxed);
+    if mmio == 0 {
+        return String::from("e1000: not initialised");
+    }
+    let rd = |reg: usize| unsafe { ((mmio + reg) as *const u32).read_volatile() };
+
+    let v = rd(GPRC) as u64;
+    let rx_good = HW_RX_GOOD.fetch_add(v, Relaxed) + v;
+    let v = rd(GPTC) as u64;
+    let tx_good = HW_TX_GOOD.fetch_add(v, Relaxed) + v;
+    let v = rd(MPC) as u64;
+    let missed = HW_MISSED.fetch_add(v, Relaxed) + v;
+
+    format!(
+        "e1000 hw: rx_good={} tx_good={} missed={} | rx head={} tail={} | tx head={} tail={} | status={:#x}",
+        rx_good,
+        tx_good,
+        missed,
+        rd(RDH),
+        rd(RDT),
+        rd(TDH),
+        rd(TDT),
+        rd(STATUS)
+    )
+}
+
+/// Link state of the first card. Reads the STATUS register directly,
+/// so it never waits on the driver lock.
+pub fn link_up() -> bool {
+    let mmio = DEBUG_MMIO.load(Relaxed);
+    mmio != 0 && unsafe { ((mmio + STATUS) as *const u32).read_volatile() } & 2 != 0
 }
 
 struct Inner {
@@ -108,7 +166,15 @@ pub fn probe(dev: &PciDevice) -> Result<()> {
     let tx_ring = pmm::alloc_zeroed().ok_or(Error::OutOfMemory)?;
     let rx_bufs = pmm::alloc_contiguous(RING * BUF_SIZE / 4096).ok_or(Error::OutOfMemory)?;
     let tx_bufs = pmm::alloc_contiguous(RING * BUF_SIZE / 4096).ok_or(Error::OutOfMemory)?;
-    let nic = Inner { mmio, rx_ring, rx_bufs, rx_next: 0, tx_ring, tx_bufs, tx_tail: 0 };
+    let nic = Inner {
+        mmio,
+        rx_ring,
+        rx_bufs,
+        rx_next: 0,
+        tx_ring,
+        tx_bufs,
+        tx_tail: 0,
+    };
 
     // Reset, mask every interrupt (we poll), bring the link up
     nic.write(CTRL, nic.read(CTRL) | CTRL_RST);
@@ -120,12 +186,22 @@ pub fn probe(dev: &PciDevice) -> Result<()> {
     crate::arch::sleep_ms(10);
     nic.write(IMC, 0xFFFF_FFFF);
     let _ = nic.read(ICR);
-    nic.write(CTRL, (nic.read(CTRL) | CTRL_SLU | CTRL_ASDE) & !(CTRL_LRST | CTRL_PHY_RST));
+    nic.write(
+        CTRL,
+        (nic.read(CTRL) | CTRL_SLU | CTRL_ASDE) & !(CTRL_LRST | CTRL_PHY_RST),
+    );
 
     // MAC address: the card loads it from its EEPROM into the receive-address registers
     let ral = nic.read(RAL0);
     let rah = nic.read(RAH0);
-    let mut mac: MacAddr = [ral as u8, (ral >> 8) as u8, (ral >> 16) as u8, (ral >> 24) as u8, rah as u8, (rah >> 8) as u8];
+    let mut mac: MacAddr = [
+        ral as u8,
+        (ral >> 8) as u8,
+        (ral >> 16) as u8,
+        (ral >> 24) as u8,
+        rah as u8,
+        (rah >> 8) as u8,
+    ];
     if mac == [0; 6] {
         for i in 0..3 {
             let word = nic.eeprom(i as u32)?;
@@ -170,10 +246,19 @@ pub fn probe(dev: &PciDevice) -> Result<()> {
     nic.write(TIPG, 0x0060_200A);
     nic.write(TCTL, TCTL_EN | TCTL_PSP | (0x0F << 4) | (0x40 << 12));
 
+    // Remember where the registers are so debug() can read the hardware counters
+    DEBUG_MMIO.store(mmio, Relaxed);
+
     let name = format!("eth{}", COUNT.fetch_add(1, Relaxed));
     log_info!(
         "e1000: {} MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        name,
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
     );
     register(Arc::new(E1000 {
         name,

@@ -9,3 +9,5 @@ pub mod splash;
 pub mod taskcmd;
 pub mod terminal;
 pub mod zpm_cmd;
+pub mod tskmngr_glue;
+pub mod tskmngr;

@@ -80,3 +80,20 @@ macro_rules! kdebug_assert {
         }
     };
 }
+
+
+#[macro_export]
+macro_rules! log_error {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let _ = write!($crate::arch::current::Uart, "ERROR: {}\n", format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! log_info {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let _ = write!($crate::arch::current::Uart, "INFO: {}\n", format_args!($($arg)*));
+    }};
+}

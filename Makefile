@@ -1,5 +1,4 @@
 # ---- Config -----------------------------------------------------------------
-
 ARCH ?= x86_64
 
 ifeq ($(ARCH),x86_64)
@@ -13,6 +12,17 @@ endif
 ifeq ($(filter x86_64 aarch64,$(ARCH)),)
   $(error ARCH=$(ARCH) is not supported, use ARCH=x86_64 or ARCH=aarch64)
 endif
+
+# ---- VM size ------------------------------------------------------------------
+# RAM given to the guest, and the size of the persistent data disk.
+# Override by hand with:  make run MEM=4G DATA_SIZE=32G
+# The data disk is a sparse qcow2 file: it starts tiny and only grows as the
+# guest writes to it, so 24G does not use 24G of your Mac's storage.
+# NOTE: DATA_SIZE only applies when the disk is created. To resize an existing
+# disk run:  qemu-img resize disk/data.qcow2 32G   (or make clean-disk)
+MEM       ?= 2G
+CPUS	  ?= 4
+DATA_SIZE ?= 24G
 
 # Read OS version directly from kernel/Cargo.toml
 VERSION := $(shell sed -n '/^\[package\]/,/^\[/p' kernel/Cargo.toml | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
@@ -34,7 +44,7 @@ ISO_IMG    := $(BUILD_DIR)/zodiacos-v$(VERSION)-$(ARCH).iso
 ISO_ROOT   := $(BUILD_DIR)/iso-$(ARCH)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean clean-disk run run-hvf run-debug watch dirs \
+.PHONY: all clean clean-disk run run-hvf run-debug watch dirs net-info \
         iso iso-x86_64 iso-aarch64 iso-all iso-inspect _iso
 
 dirs:
@@ -62,9 +72,12 @@ KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 DISK_IMG   := $(BUILD_DIR)/zodiacos.img
 
-# Data disk lives outside build/ so `make clean` never deletes your files
+# Data disk lives outside build/ so `make clean` never deletes your files.
+# qcow2 = QEMU's own sparse image format. The guest still sees a plain 24G IDE
+# disk (raw sectors); QEMU does the translation, and every write the guest
+# makes is saved in this file, so data survives reboots and rebuilds.
 DATA_DIR   := disk
-DATA_IMG   := $(DATA_DIR)/data.img
+DATA_IMG   := $(DATA_DIR)/data.qcow2
 
 # ---- Kernel size, handed to the bootloader automatically ----------------------
 # The BIOS loads the kernel in CHUNK_SECTORS-sector reads into low memory at
@@ -88,25 +101,56 @@ endif
 SCREEN_W := $(word 1,$(subst x, ,$(SCREEN_SIZE)))
 SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
 
+# ---- Network (QEMU user-mode / SLIRP) -----------------------------------------
+# QEMU runs its own virtual LAN and NATs it out through your Mac's real
+# connection (WiFi or the USB ethernet dongle, it does not matter which).
+# The guest never sees the dongle. ZodiacOS only sees this virtual e1000 card.
+#
+# IMPORTANT: this Makefile only controls what QEMU offers. The kernel itself
+# must put these same values on eth0 (static config) or ask for them with a
+# DHCP client. Until it does, pings fail with "no route to host".
+#
+#   Guest IP    10.0.2.15   (also the first address QEMU's DHCP server hands out)
+#   Netmask     255.255.255.0
+#   Gateway     10.0.2.2    (QEMU answers ARP and ping for this itself)
+#   DNS         10.0.2.3
+#
+# Change the card with:  make run NIC=virtio-net-pci
+NIC          ?= e1000
+NET_SUBNET   := 10.0.2.0/24
+NET_GATEWAY  := 10.0.2.2
+NET_DNS      := 10.0.2.3
+NET_GUEST_IP := 10.0.2.15
+NET_PCAP     := $(BUILD_DIR)/net.pcap
+
+# One NIC only. Two -nic user,... lines create two separate networks that
+# both use 10.0.2.x, which is confusing when debugging.
+# filter-dump records every frame the guest sends/receives; open it in Wireshark.
+QEMU_NET := \
+	-netdev user,id=net0,net=$(NET_SUBNET),host=$(NET_GATEWAY),dns=$(NET_DNS),dhcpstart=$(NET_GUEST_IP) \
+	-device $(NIC),netdev=net0 \
+	-object filter-dump,id=dump0,netdev=net0,file=$(NET_PCAP)
+
 # COM1 output (slog!/log_info! in the kernel) goes to this terminal.
 # To keep the terminal quiet and read logs later, use instead:
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
-	-m 256M \
-	-nic user,model=e1000\
+	-m $(MEM) \
+	-smp $(CPUS) \
+	$(QEMU_NET) \
 	-vga none \
 	-device VGA,edid=on,xres=$(SCREEN_W),yres=$(SCREEN_H),vgamem_mb=32 \
 	-display cocoa \
 	-rtc base=localtime \
 	-serial stdio \
 	-drive format=raw,file=$(DISK_IMG),if=ide,index=0 \
-	-drive format=raw,file=$(DATA_IMG),if=ide,index=1
+	-drive format=qcow2,file=$(DATA_IMG),if=ide,index=1
 # To see a USB controller in `lspci`, add:  -device qemu-xhci -device usb-kbd
 
 all: $(DISK_IMG) $(DATA_IMG)
 	echo ""
 	echo "  Build complete! Disk image: $(DISK_IMG)"
-	echo "  Run with:  make run     (screen: $(SCREEN_W)x$(SCREEN_H))"
+	echo "  Run with:  make run     (screen: $(SCREEN_W)x$(SCREEN_H), RAM: $(MEM), data disk: $(DATA_SIZE))"
 	echo ""
 
 $(KERNEL_ELF): $(KERNEL_LIB) $(LINKER) | dirs
@@ -131,14 +175,24 @@ $(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) $(KERNEL_BIN) | dirs
 	echo "       $$(wc -c < $@) bytes — OK"
 	@printf "       Boot signature: "; xxd -s 510 -l 2 $@
 
+# ---- Initramfs (becomes the root ramfs, including /boot) ----------------------
+# The bootloader and kernel are written to the disk as raw sectors, so they are
+# not files. To make /boot show something real, copies of boot.bin and
+# kernel.bin are put into initramfs/boot/ before the image is packed.
+# (Add initramfs/boot/ to .gitignore, it is regenerated on every build.)
 INITRAMFS_DIR := initramfs
 INITRAMFS_IMG := $(BUILD_DIR)/initramfs.img
 INITRAMFS_LBA := 2048
 
-$(INITRAMFS_IMG): $(shell find $(INITRAMFS_DIR) -type f 2>/dev/null) scripts/mkinitramfs.py | dirs
+$(INITRAMFS_IMG): $(BOOT_BIN) $(KERNEL_BIN) $(shell find $(INITRAMFS_DIR) -type f 2>/dev/null) scripts/mkinitramfs.py | dirs
 	echo "[INITRD] Packing $(INITRAMFS_DIR)/ ..."
+	mkdir -p $(INITRAMFS_DIR)/boot
+	cp $(BOOT_BIN)   $(INITRAMFS_DIR)/boot/boot.bin
+	cp $(KERNEL_BIN) $(INITRAMFS_DIR)/boot/kernel.bin
 	python3 scripts/mkinitramfs.py $(INITRAMFS_DIR) $@
 
+# NOTE: this boot disk is recreated from zeros on every build, so never keep
+# user files on it. Persistent files belong on the data disk below.
 $(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN) $(INITRAMFS_IMG)
 	echo "[IMG]  Creating disk image..."
 	dd if=/dev/zero        of=$@ bs=1m  count=64 status=none
@@ -147,11 +201,11 @@ $(DISK_IMG): $(BOOT_BIN) $(KERNEL_BIN) $(INITRAMFS_IMG)
 	dd if=$(INITRAMFS_IMG) of=$@ bs=512 seek=$(INITRAMFS_LBA) conv=notrunc status=none
 	echo "       Disk image ready: $@"
 
-# Data disk (created once, never rebuilt)
+# Data disk (created once, never rebuilt). Sparse qcow2, see DATA_IMG above.
 $(DATA_IMG):
-	echo "[DATA] Creating 16 MB data disk..."
+	echo "[DATA] Creating $(DATA_SIZE) data disk (sparse qcow2)..."
 	@mkdir -p $(DATA_DIR)
-	dd if=/dev/zero of=$@ bs=1m count=16 status=none
+	qemu-img create -f qcow2 $@ $(DATA_SIZE)
 
 # NOTE: the ISO holds the disk image as a file. It has no El Torito boot
 # record yet, so boot build/zodiacos.img itself (make run).
@@ -172,13 +226,26 @@ _iso: $(DISK_IMG)
 	echo ""
 
 run: $(DISK_IMG) $(DATA_IMG)
-	echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display"
+	echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display, $(MEM) RAM"
 	$(QEMU) $(QEMU_DRIVES)
 
 # Stops at the first fault and logs CPU resets/interrupts instead of rebooting
 run-debug: $(DISK_IMG) $(DATA_IMG)
 	$(QEMU) $(QEMU_DRIVES) -d int,cpu_reset -no-reboot -D $(BUILD_DIR)/qemu.log
 	echo "Log written to $(BUILD_DIR)/qemu.log"
+
+# Prints the network values the kernel must use, and where the capture goes
+net-info:
+	echo ""
+	echo "  NIC model:   $(NIC)"
+	echo "  Guest IP:    $(NET_GUEST_IP)"
+	echo "  Netmask:     255.255.255.0  ($(NET_SUBNET))"
+	echo "  Gateway:     $(NET_GATEWAY)"
+	echo "  DNS:         $(NET_DNS)"
+	echo "  Capture:     $(NET_PCAP)  (open in Wireshark)"
+	echo ""
+	echo "  Test order inside ZodiacOS:  ping $(NET_GATEWAY)  then  ping 8.8.8.8"
+	echo ""
 
 run-hvf:
 	echo "run-hvf is only for ARCH=aarch64 (x86 guests can't use HVF on Apple Silicon)"
@@ -195,7 +262,7 @@ AA64_LD    := $(AA64_DIR)/linker.ld
 AA64_OBJS  := $(BUILD_DIR)/entry.o $(BUILD_DIR)/exception_vectors.o
 KERNEL_ELF := $(BUILD_DIR)/kernel-aarch64.elf
 
-QEMU_MACHINE := -M virt -m 256M -nographic
+QEMU_MACHINE := -M virt -m $(MEM) -smp $(CPUS) -nographic
 
 all: $(KERNEL_ELF)
 	echo ""
@@ -226,7 +293,7 @@ _iso: $(KERNEL_ELF)
 		"Run the kernel in QEMU:" \
 		"  qemu-system-aarch64 -M virt -m 256M -nographic -cpu cortex-a72 -kernel kernel-aarch64.elf" \
 		"" \
-		"This ISO is a container for the kernel. It is not UEFI-bootable yet." \
+		"This ISO is a container for the kernel. It is not UEFI-bootable yet, see README.txt inside" \
 		> $(ISO_ROOT)/README.txt
 	xorriso -as mkisofs \
 		-V ZODIACOS \
@@ -250,6 +317,9 @@ run-hvf: $(KERNEL_ELF)
 run-debug: $(KERNEL_ELF)
 	$(QEMU) $(QEMU_MACHINE) -cpu cortex-a72 -d int,guest_errors -no-reboot -D $(BUILD_DIR)/qemu.log -kernel $(KERNEL_ELF)
 	echo "Log written to $(BUILD_DIR)/qemu.log"
+
+net-info:
+	echo "net-info is only for ARCH=x86_64 (the aarch64 virt target has no NIC configured yet)"
 
 endif
 

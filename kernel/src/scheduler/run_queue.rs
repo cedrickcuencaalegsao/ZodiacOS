@@ -1,5 +1,5 @@
 use super::MAX_TASKS;
-use crate::kassert;
+use shared::kassert;
 
 pub struct RunQueue {
     buf: [u8; MAX_TASKS],
@@ -9,7 +9,11 @@ pub struct RunQueue {
 
 impl RunQueue {
     pub const fn new() -> Self {
-        RunQueue { buf: [0; MAX_TASKS], head: 0, len: 0 }
+        RunQueue {
+            buf: [0; MAX_TASKS],
+            head: 0,
+            len: 0,
+        }
     }
 
     pub fn push(&mut self, slot: usize) {

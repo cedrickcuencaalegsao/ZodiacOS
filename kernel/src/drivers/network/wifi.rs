@@ -1,8 +1,8 @@
 // #![allow(dead_code)]
 use super::NetDevice;
-use crate::base::error::Result;
 use crate::base::sync::Mutex;
 use alloc::{string::String, sync::Arc, vec::Vec};
+use errors::Result;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Security {

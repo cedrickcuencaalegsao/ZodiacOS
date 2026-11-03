@@ -1,9 +1,11 @@
 use super::ipv4::{self, checksum};
-use crate::base::error::Result;
+use super::{Config};
+use crate::base::sync::Mutex;
 use crate::drivers::network::NetDevice;
 use crate::interrupts;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering::SeqCst};
+use errors::Result;
 
 const ID: u16 = 0x5A44;
 
@@ -64,3 +66,13 @@ pub fn handle(dev: &Arc<dyn NetDevice>, src_mac: [u8; 6], src_ip: [u8; 4], msg: 
         _ => {}
     }
 }
+
+pub fn config() -> Config {
+    *CONFIG.lock()
+}
+
+static CONFIG: Mutex<Config> = Mutex::new(Config {
+    ip: [10, 0, 2, 15],
+    netmask: [255, 255, 255, 0],
+    gateway: [10, 0, 2, 2],
+});

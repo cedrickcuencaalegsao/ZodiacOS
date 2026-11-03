@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::base::error::Error;
+use errors::Error;
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use sha1::Sha1;
@@ -28,8 +28,16 @@ pub fn derive_ptk(
     anonce: &[u8; 32],
     snonce: &[u8; 32],
 ) -> [u8; 48] {
-    let (mac_a, mac_b) = if ap_mac <= client_mac { (ap_mac, client_mac) } else { (client_mac, ap_mac) };
-    let (nonce_a, nonce_b) = if anonce <= snonce { (anonce, snonce) } else { (snonce, anonce) };
+    let (mac_a, mac_b) = if ap_mac <= client_mac {
+        (ap_mac, client_mac)
+    } else {
+        (client_mac, ap_mac)
+    };
+    let (nonce_a, nonce_b) = if anonce <= snonce {
+        (anonce, snonce)
+    } else {
+        (snonce, anonce)
+    };
 
     let mut data = [0u8; 76];
     data[0..6].copy_from_slice(mac_a);
@@ -58,8 +66,11 @@ pub fn derive_ptk(
 /// (passphrase "password", SSID "IEEE").
 pub fn selftest() -> bool {
     const EXPECTED: [u8; 32] = [
-        0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef, 0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f, 0x90,
-        0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2, 0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10, 0xa1, 0x2e,
+        0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef, 0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f,
+        0x90, 0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2, 0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10,
+        0xa1, 0x2e,
     ];
-    derive_pmk("password", "IEEE").map(|pmk| pmk == EXPECTED).unwrap_or(false)
+    derive_pmk("password", "IEEE")
+        .map(|pmk| pmk == EXPECTED)
+        .unwrap_or(false)
 }

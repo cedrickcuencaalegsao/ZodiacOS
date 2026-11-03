@@ -104,7 +104,7 @@ pub fn abort() {
 /// Needs the timer running, so call it after interrupts::enable().
 pub fn hold(ms: u32) {
     if active() {
-        sleep_ms(ms);
+        sleep_ms(ms.into());
     }
 }
 
@@ -129,7 +129,7 @@ pub fn finish() {
     }
     DONE.store(TOTAL.load(Relaxed), Relaxed);
     redraw_bar();
-    sleep_ms(END_HOLD_MS);
+    sleep_ms(END_HOLD_MS.into());
     if fbcon::active() {
         hd_fade();
     } else {
@@ -305,11 +305,11 @@ fn text_fade() {
 
     // Flash everything white, then fade out to black.
     draw_logo(&logo, t.top, t.logo_col, t.s, WHITE, WHITE);
-    sleep_ms(FLASH_MS);
+    sleep_ms(FLASH_MS.into());
     for c in [SOFT, DIM] {
         draw_logo(&logo, t.top, t.logo_col, t.s, c, c);
         draw_bar(t.bar_row, t.bar_col, t.bar_len, t.bar_len, c, c);
-        sleep_ms(FADE_MS);
+        sleep_ms(FADE_MS.into());
     }
 }
 

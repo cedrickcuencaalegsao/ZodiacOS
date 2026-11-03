@@ -1,4 +1,4 @@
-use crate::base::error::error_enum::Error;
+use crate::error_enum::Error;
 use core::fmt;
 
 impl fmt::Display for Error {
