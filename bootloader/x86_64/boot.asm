@@ -1,26 +1,26 @@
 ; ZodiacOS x86_64 bootloader: one 512-byte sector.
-; Real mode: read the BIOS memory map, load the kernel, enable A20,
-; then long_mode.asm switches to 64-bit, copies the kernel to 1 MiB and jumps to it.
+; Real mode: read the BIOS memory map, enable A20, then load the kernel in chunks:
+; each chunk is read into a small low buffer (LOAD_ADDR) and immediately copied up to
+; 1 MiB with BIOS INT 15h AH=87h. The kernel size is therefore no longer limited by
+; the 0x9FC00 real-mode boundary. long_mode.asm then switches to 64-bit and jumps.
 ;
 ; Files:    boot.asm (this one), gdt.asm, long_mode.asm
-; Assemble: the Makefile does it and passes the kernel size in, so nothing here
-;           has to be edited when the kernel grows:
-;             nasm -f bin -I bootloader/x86_64/ -DKERNEL_SECTORS=<n> -DCHUNK=<n> -o build/boot.bin bootloader/x86_64/boot.asm
+; Assemble: the Makefile passes the kernel size in:
+;             nasm -f bin -I bootloader/x86_64/ -DKERNEL_SECTORS=<n> -DCHUNK=64 -o build/boot.bin bootloader/x86_64/boot.asm
 
 [bits 16]
 [org 0x7C00]
 
-LOAD_ADDR       equ 0x10000     ; the BIOS can only read below 1 MiB, so the image is loaded here...
+LOAD_ADDR       equ 0x10000     ; low staging buffer, one CHUNK long (BIOS disk reads must be < 1 MiB)
 LOAD_SEG        equ 0x1000      ; LOAD_ADDR >> 4
-KERNEL_ADDR     equ 0x100000    ; ...and copied here (the link address in kernel/linker.ld)
-LOAD_LIMIT      equ 0x9FC00     ; start of the BIOS data area: the image must end below this
+KERNEL_ADDR     equ 0x100000    ; final home of the kernel (the link address in kernel/linker.ld)
 
 ; Both come from the Makefile (-D). The defaults only apply if you assemble by hand.
 %ifndef CHUNK
-CHUNK           equ 8           ; sectors per BIOS read (4 KB)
+CHUNK           equ 64          ; sectors per BIOS read + copy (32 KB)
 %endif
 %ifndef KERNEL_SECTORS
-KERNEL_SECTORS  equ 1144        ; image size in sectors, a multiple of CHUNK
+KERNEL_SECTORS  equ 1408        ; image size in sectors, a multiple of CHUNK
 %endif
 
 %if KERNEL_SECTORS % CHUNK != 0
@@ -29,8 +29,11 @@ KERNEL_SECTORS  equ 1144        ; image size in sectors, a multiple of CHUNK
 %if KERNEL_SECTORS / CHUNK > 255
 %error too many chunks for the 8-bit counter, raise CHUNK
 %endif
-%if LOAD_ADDR + KERNEL_SECTORS * 512 > LOAD_LIMIT
-%error the kernel image does not fit below the BIOS data area at 0x9FC00
+%if CHUNK * 512 > 0xFFFE
+%error CHUNK too large: one copy is at most 64 KB
+%endif
+%if KERNEL_ADDR + KERNEL_SECTORS * 512 > 0x1000000
+%error kernel must end below 16 MiB (the BIOS copy uses 24-bit addresses)
 %endif
 
 STACK_TOP       equ 0x90000
@@ -46,18 +49,18 @@ start:
     cli
     xor ax, ax
     mov ds, ax
-    mov es, ax
+    mov es, ax                  ; ES must stay 0: INT 15h AH=87h reads ES:SI
     mov ss, ax
     mov sp, 0x7C00
     sti
 
     mov [boot_drive], dl        ; BIOS passes the boot drive in DL
 
-    ; ---- Check there is enough conventional memory for the kernel image ----
-    ; INT 0x12 returns the KB of conventional memory (the EBDA may start below 0x9FC00)
-    int  0x12                   ; AX = KB of conventional memory
-    cmp  ax, (LOAD_ADDR + KERNEL_SECTORS * 512 + 1023) / 1024
-    jb   disk_error
+    ; ---- Enable A20 (fast method), needed to touch memory above 1 MiB ----
+    in   al, 0x92
+    or   al, 2
+    and  al, 0xFE               ; never set bit 0 (it resets the CPU)
+    out  0x92, al
 
     ; ---- Ask the BIOS for the physical memory map (INT 0x15, EAX=0xE820) ----
     xor  ebx, ebx               ; continuation value, 0 = first call
@@ -82,7 +85,7 @@ start:
     mov  [MEMMAP_ADDR], bp
     mov  word [MEMMAP_ADDR + 2], 0
 
-    ; ---- Load the kernel in chunks with BIOS extended read (LBA), retrying on error ----
+    ; ---- Load the kernel chunk by chunk (BIOS extended read, LBA), retrying on error ----
 .load:
     mov  cx, 3                  ; attempts per chunk
 .retry:
@@ -98,19 +101,20 @@ start:
     jnz  .retry
     jmp  disk_error
 .ok:
-    add  word  [dap_seg], CHUNK * 512 / 16      ; advance destination
-    add  dword [dap_lba], CHUNK                 ; advance source sector
+    ; copy this chunk from the staging buffer up to its place at 1 MiB+
+    mov  ah, 0x87
+    mov  cx, CHUNK * 512 / 2    ; count is in WORDS
+    mov  si, xgdt               ; ES:SI -> descriptor table (ES = 0)
+    int  0x15
+    jc   disk_error
+    add  word [xdst + 2], CHUNK * 512   ; advance destination base (24-bit)
+    adc  byte [xdst + 4], 0
+    add  dword [dap_lba], CHUNK         ; advance source sector
     dec  byte  [chunks_left]
     jnz  .load
 
-    ; ---- Enable A20 (fast method), needed to touch memory above 1 MiB ----
-    cli
-    in   al, 0x92
-    or   al, 2
-    and  al, 0xFE               ; never set bit 0 (it resets the CPU)
-    out  0x92, al
-
     ; ---- Make sure the CPU supports long mode, otherwise we would triple fault ----
+    cli
     mov  eax, 0x80000000
     cpuid
     cmp  eax, 0x80000001
@@ -133,14 +137,25 @@ disk_error:
 %include "long_mode.asm"        ; enter_long_mode, long_mode_entry
 
 ; ---- Data ----
-dap:                            ; Disk Address Packet (updated after each chunk)
+dap:                            ; Disk Address Packet (only the LBA changes between reads)
     db 0x10, 0
     dw CHUNK                    ; sectors per read
     dw 0x0000                   ; destination offset
-dap_seg:
-    dw LOAD_SEG                 ; destination segment
+    dw LOAD_SEG                 ; destination segment (always the same staging buffer)
 dap_lba:
     dq 1                        ; start at LBA 1
+
+; Descriptor table for INT 15h AH=87h (6 descriptors, 8 bytes each)
+xgdt:
+    dq 0                                ; 0: dummy
+    dq 0                                ; 1: filled in by the BIOS
+    dw 0xFFFF, LOAD_ADDR & 0xFFFF       ; 2: source  (limit, base 15:0)
+    db (LOAD_ADDR >> 16) & 0xFF, 0x93, 0, 0
+xdst:
+    dw 0xFFFF, KERNEL_ADDR & 0xFFFF     ; 3: destination (advanced after every chunk)
+    db (KERNEL_ADDR >> 16) & 0xFF, 0x93, 0, 0
+    dq 0                                ; 4: BIOS code segment (filled by the BIOS)
+    dq 0                                ; 5: BIOS stack segment (filled by the BIOS)
 
 chunks_left: db KERNEL_SECTORS / CHUNK
 boot_drive:  db 0

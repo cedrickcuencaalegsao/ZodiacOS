@@ -80,14 +80,22 @@ DATA_DIR   := disk
 DATA_IMG   := $(DATA_DIR)/data.qcow2
 
 # ---- Kernel size, handed to the bootloader automatically ----------------------
-# The BIOS loads the kernel in CHUNK_SECTORS-sector reads into low memory at
-# 0x10000. That area ends where the BIOS data area starts (0x9FC00), which caps
-# the image at 1150 sectors; rounded down to whole chunks it is 1144 sectors.
+# The bootloader reads the kernel in CHUNK_SECTORS-sector reads into a small
+# staging buffer at 0x10000 and copies every chunk up to 1 MiB (INT 15h AH=87h),
+# so the old 0x9FC00 real-mode limit no longer applies.
+#
+# The size limit now comes from the DISK LAYOUT instead: the kernel is written at
+# LBA 1 and the initramfs at INITRAMFS_LBA, so the (chunk-padded) kernel must end
+# before it. With INITRAMFS_LBA = 2048 that is 1984 sectors (992 KB).
+# To go bigger, raise INITRAMFS_LBA below AND the matching constant in the kernel
+# (wherever it reads the initramfs from), then raise MAX_KERNEL_SECTORS.
+#
 # boot.bin is assembled AFTER the kernel with -DKERNEL_SECTORS=<its real size>,
 # so nothing has to be edited by hand when the kernel grows.
-CHUNK_SECTORS      := 8
-MAX_KERNEL_SECTORS := 1144
-MAX_KERNEL_BYTES   := 585728
+CHUNK_SECTORS      := 64
+INITRAMFS_LBA      := 2048
+MAX_KERNEL_SECTORS := $(shell echo $$(( ($(INITRAMFS_LBA) - 1) / $(CHUNK_SECTORS) * $(CHUNK_SECTORS) )))
+MAX_KERNEL_BYTES   := $(shell echo $$(( $(MAX_KERNEL_SECTORS) * 512 )))
 
 # ---- Host screen size ---------------------------------------------------------
 # Asks macOS for the main screen size (in points). The size is handed to QEMU's
@@ -100,6 +108,11 @@ ifeq ($(SCREEN_SIZE),)
 endif
 SCREEN_W := $(word 1,$(subst x, ,$(SCREEN_SIZE)))
 SCREEN_H := $(word 2,$(subst x, ,$(SCREEN_SIZE)))
+
+# ---- CPU ----------------------------------------------------------------------
+# "max" exposes every feature QEMU can emulate. The kernel needs RDRAND for
+# password salts and recovery codes (security/entropy.rs fails closed without it).
+CPU_MODEL ?= max
 
 # ---- Network (QEMU user-mode / SLIRP) -----------------------------------------
 # QEMU runs its own virtual LAN and NATs it out through your Mac's real
@@ -135,6 +148,7 @@ QEMU_NET := \
 # To keep the terminal quiet and read logs later, use instead:
 #   -serial file:$(BUILD_DIR)/serial.log
 QEMU_DRIVES := \
+	-cpu $(CPU_MODEL) \
 	-m $(MEM) \
 	-smp $(CPUS) \
 	$(QEMU_NET) \
@@ -160,10 +174,10 @@ $(KERNEL_ELF): $(KERNEL_LIB) $(LINKER) | dirs
 $(KERNEL_BIN): $(KERNEL_ELF)
 	echo "[OBJ]  Extracting flat binary..."
 	$(OBJCOPY) -O binary $< $@
-	echo "       $$(wc -c < $@) bytes (flat binary)"
+	echo "       $$(wc -c < $@) bytes (flat binary, limit $(MAX_KERNEL_BYTES))"
 	test $$(wc -c < $@) -le $(MAX_KERNEL_BYTES) || \
-		(echo "ERROR: kernel is bigger than the $(MAX_KERNEL_BYTES)-byte real-mode load limit (0x9FC00)." && \
-		 echo "       Shrink it (opt-level, lto, strip, big static arrays) or load it above 1 MiB." && exit 1)
+		(echo "ERROR: kernel is bigger than $(MAX_KERNEL_BYTES) bytes, the space before the initramfs at LBA $(INITRAMFS_LBA)." && \
+		 echo "       Shrink it, or move INITRAMFS_LBA (Makefile + kernel) further out." && exit 1)
 
 # The bootloader is built after the kernel: it needs the kernel's size.
 $(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) $(KERNEL_BIN) | dirs
@@ -182,7 +196,6 @@ $(BOOT_BIN): $(BOOT_ASM) $(BOOT_INCLUDES) $(KERNEL_BIN) | dirs
 # (Add initramfs/boot/ to .gitignore, it is regenerated on every build.)
 INITRAMFS_DIR := initramfs
 INITRAMFS_IMG := $(BUILD_DIR)/initramfs.img
-INITRAMFS_LBA := 2048
 
 $(INITRAMFS_IMG): $(BOOT_BIN) $(KERNEL_BIN) $(shell find $(INITRAMFS_DIR) -type f 2>/dev/null) scripts/mkinitramfs.py | dirs
 	echo "[INITRD] Packing $(INITRAMFS_DIR)/ ..."
@@ -226,7 +239,7 @@ _iso: $(DISK_IMG)
 	echo ""
 
 run: $(DISK_IMG) $(DATA_IMG)
-	echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display, $(MEM) RAM"
+	echo "[QEMU] Requesting $(SCREEN_W)x$(SCREEN_H) display, $(MEM) RAM, cpu $(CPU_MODEL)"
 	$(QEMU) $(QEMU_DRIVES)
 
 # Stops at the first fault and logs CPU resets/interrupts instead of rebooting

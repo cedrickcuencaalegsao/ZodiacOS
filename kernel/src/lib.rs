@@ -53,7 +53,6 @@ pub(crate) use {arch::current::interrupts as idt, drivers::rtc as time, drivers:
 const INIT_STEPS: usize = 6; // memory, drivers, fs, interrupts, scheduler, process
 
 pub fn kernel_main() -> ! {
-    // after
     if let Err(e) = memory::init() {
         panic!("memory init failed: {:?}", e);
     }
@@ -83,6 +82,43 @@ pub fn kernel_main() -> ! {
     console::splash::finish(); // fill to 100%, flash, fade, clear
     log_info!("ZodiacOS kernel started");
 
+    // Login -> desktop, repeated until the desktop can't start. Logging out of the
+    // desktop returns to the login screen; a desktop error drops to the terminal.
+    // Accounts are loaded inside console::login::run() (first call only).
+    loop {
+        log_info!("starting login");
+        let session = console::login::run();
+
+        // First-run only: show the recovery code once, then wait for a key.
+        // Deliberately printed, not logged: log output can reach serial/log buffers.
+        if let Some(code) = console::login::take_recovery_code() {
+            vga::clear();
+            kprintln!("Recovery code (write it down, shown once):\n");
+            kprintln!("    {}\n", code);
+            kprintln!("Press any key to continue.");
+            keyboard::flush();
+            keyboard::wait_char();
+            vga::clear();
+        }
+
+        log_info!("user '{}' logged in (uid {})", session.name, session.uid);
+
+        log_info!("starting desktop");
+        match console::desktop_host::run() {
+            Ok(()) => {
+                log_info!("user logged out");
+                security::service::logout(); // pops the session opened at login
+                vga::clear();
+                continue; // back to the login screen
+            }
+            Err(e) => {
+                log_error!("desktop unavailable: {}", e);
+                break; // fall through to the terminal, still logged in
+            }
+        }
+    }
+
+    vga::clear();
     kprintln!("ZodiacOS 0.1.0");
     kprintln!("Type 'help' for a list of commands.\n");
     console::terminal::run();

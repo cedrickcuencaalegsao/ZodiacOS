@@ -1,7 +1,7 @@
 ; long_mode.asm - switch the CPU from 16-bit real mode to 64-bit long mode,
-; copy the kernel to its final address, then jump to it.
-; Included by boot.asm. Needs LOAD_ADDR, KERNEL_ADDR, KERNEL_SECTORS, STACK_TOP
-; (boot.asm) and gdt_ptr, CODE_SEL, DATA_SEL (gdt.asm).
+; then jump to the kernel, which boot.asm has already copied to KERNEL_ADDR (1 MiB).
+; Included by boot.asm. Needs KERNEL_ADDR, STACK_TOP (boot.asm) and
+; gdt_ptr, CODE_SEL, DATA_SEL (gdt.asm).
 
 PML4            equ 0x1000
 PDPT            equ 0x2000
@@ -60,13 +60,8 @@ long_mode_entry:
     mov  fs, ax
     mov  gs, ax
 
-    ; ---- Copy the kernel from the low load area to its home at 1 MiB ----
-    cld
-    mov  esi, LOAD_ADDR
-    mov  edi, KERNEL_ADDR
-    mov  ecx, KERNEL_SECTORS * 512 / 8
-    rep  movsq
-
+    ; The kernel is already at KERNEL_ADDR: boot.asm copied each chunk there as it
+    ; was read, so there is no copy step here any more.
     mov  esp, STACK_TOP
     mov  eax, KERNEL_ADDR
     jmp  rax                    ; -> _start in the kernel

@@ -12,3 +12,4 @@ pub mod zpm_cmd;
 pub mod tskmngr_glue;
 pub mod tskmngr;
 pub mod zedit_glue;
+pub mod prompt;

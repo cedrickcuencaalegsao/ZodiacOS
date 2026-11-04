@@ -14,10 +14,11 @@ panic     = "abort"
 opt-level = 1
 
 [profile.release]
-panic         = "abort"
-opt-level     = "s"
-lto           = true
+opt-level = "z"        # try "z" if you need more
+lto = "fat"
 codegen-units = 1
+panic = "abort"
+strip = true
 
 [dependencies]
 sha2 = { version = "0.10", default-features = false }

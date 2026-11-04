@@ -1,16 +1,25 @@
 #![allow(dead_code)]
-use alloc::vec::Vec;
+//! kernel/src/console/login.rs
+//!
+//! Adapter between the `login_manager` UI crate and the kernel's
+//! `security::service` (account database + session manager).
+
+use alloc::{string::String, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 use login_manager::session::{AuthError, Session};
 use login_manager::user_accounts::UserInfo;
 use login_manager::{Color, Gfx, Key, Platform};
+use spin::Mutex;
 
 use crate::console::fbcon;
 use crate::keyboard;
-use crate::security::auth::AuthService;
+use crate::security::auth::AuthError as KAuthError;
+use crate::security::service;
 
 const PASSWD_PATH: &str = "/etc/passwd";
 const PASSWD_MODE: u16 = 0o600;
-/// Dev shortcut: pre-create root/root so first-boot setup is skipped.
+/// Dev shortcut: pre-create root so first-boot setup is skipped.
+/// Passwords must be 8+ characters now, so this is "rootroot", not "root".
 const DEV_DEFAULT_ROOT: bool = false;
 
 // Fallback VGA text mode (only used if the framebuffer console isn't active)
@@ -24,23 +33,39 @@ const PALETTE: [u32; 16] = [
     0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 ];
 
-struct KernelPlatform {
-    auth: AuthService,
+/// The recovery code from first-run setup. The login UI has no screen for it, so it
+/// waits here until the caller shows it with `take_recovery_code()`.
+static RECOVERY_CODE: Mutex<Option<String>> = Mutex::new(None);
+static INIT_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Returns the recovery code once (first-run setup only), then None.
+pub fn take_recovery_code() -> Option<String> {
+    RECOVERY_CODE.lock().take()
 }
 
-impl KernelPlatform {
-    fn random_salt() -> [u8; 16] {
-        let mut salt = [0u8; 16];
-        for b in salt.iter_mut() {
-            let t = unsafe { core::arch::x86_64::_rdtsc() };
-            *b = (t ^ (t >> 17) ^ (t >> 33)) as u8;
-            for _ in 0..50 {
-                core::hint::spin_loop();
-            }
-        }
-        salt
+fn map_err(e: KAuthError) -> AuthError {
+    match e {
+        KAuthError::AlreadySetUp => AuthError::AlreadySetUp,
+        KAuthError::WeakPassword => AuthError::WeakPassword,
+        // Fail closed: never create accounts with weak salts.
+        KAuthError::NoEntropy => panic!("no hardware RNG; run QEMU with -cpu max"),
+        _ => AuthError::InvalidCredentials,
     }
 }
+
+/// Timestamp stored in the session. ADAPT: swap for your tick counter.
+fn now() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe { core::arch::x86_64::_rdtsc() }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        0
+    }
+}
+
+struct KernelPlatform;
 
 impl Platform for KernelPlatform {
     // ---- display: goes through the framebuffer console ----
@@ -101,21 +126,28 @@ impl Platform for KernelPlatform {
         crate::arch::sleep_ms(ms as _);
     }
 
-    // ---- account services: all handled by the kernel ----
+    // ---- account services: adapters over security::service ----
     fn has_accounts(&self) -> bool {
-        self.auth.has_accounts()
+        !service::needs_setup()
     }
 
     fn list_users(&self) -> Vec<UserInfo> {
-        self.auth.list_users()
+        service::list_users()
+            .into_iter()
+            .map(|u| UserInfo { name: u.name, uid: u.uid })
+            .collect()
     }
 
     fn authenticate(&mut self, name: &str, password: &str) -> Result<Session, AuthError> {
-        self.auth.authenticate(name, password)
+        service::login(name, password, now()).map_err(map_err)?;
+        let s = service::whoami().ok_or(AuthError::InvalidCredentials)?;
+        Ok(Session { uid: s.uid, gid: s.gid, name: s.name, home: s.home })
     }
 
     fn create_root(&mut self, password: &str) -> Result<(), AuthError> {
-        self.auth.create_root(password, Self::random_salt())
+        let code = service::first_run_setup(password).map_err(map_err)?;
+        *RECOVERY_CODE.lock() = Some(code);
+        Ok(())
     }
 
     fn gfx(&mut self) -> Option<&mut dyn Gfx> {
@@ -180,22 +212,23 @@ pub fn run() -> Session {
         fbcon::set_cursor(false);
     }
 
-    let mut platform = KernelPlatform {
-        auth: AuthService::load(read_passwd()),
-    };
-
-    if DEV_DEFAULT_ROOT && !platform.auth.has_accounts() {
-        let _ = platform.auth.create_root("root", [1; 16]);
+    // Load accounts once. run() is called again after every logout, and a second
+    // init() would wipe the in-memory accounts.
+    if !INIT_DONE.swap(true, Ordering::SeqCst) {
+        service::init(read_passwd());
     }
 
-    let session = login_manager::run(&mut platform);
+    if DEV_DEFAULT_ROOT && service::needs_setup() {
+        if let Ok(code) = service::first_run_setup("rootroot") {
+            *RECOVERY_CODE.lock() = Some(code);
+        }
+    }
 
-    if platform.auth.dirty() {
-        // let _ = crate::fs::write(
-        //     PASSWD_PATH,
-        //     PASSWD_MODE,
-        //     platform.auth.serialize().as_bytes(),
-        // );
+    let session = login_manager::run(&mut KernelPlatform);
+
+    if let Some(file) = service::take_pending_save() {
+        let _ = file;
+        // let _ = crate::fs::write(PASSWD_PATH, PASSWD_MODE, file.as_bytes());
     }
     session
 }
