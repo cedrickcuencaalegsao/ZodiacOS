@@ -1,7 +1,7 @@
 use crate::drivers::storage;
 use crate::filesystem::file::{self, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
 use crate::filesystem::path::{resolve_against, split_parent};
-use crate::filesystem::{self, FileType, Level, Stat, level_of, mount};
+use crate::filesystem::{self, level_of, mount, FileType, Level, Stat};
 use crate::{kprint, kprintln, time, vga};
 use alloc::{format, string::String, vec::Vec};
 use core::cmp::Ordering;
@@ -38,6 +38,7 @@ pub fn run(cmd: &str, args: &[&str]) {
         "mount" => mounts(),
         "umount" => each(args, cmd, |p| mount::umount(&abs(p)?)),
         "df" => df(),
+        "tree" => tree(args),
         "lsblk" | "drives" => lsblk(),
         _ => {}
     }
@@ -85,10 +86,7 @@ fn make(args: &[&str], cmd: &str, want: Level) {
         return;
     }
     let (need, hint) = match want {
-        Level::Cluster => (
-            Level::Container,
-            "a Cluster goes directly inside a Container",
-        ),
+        Level::Cluster => (Level::Container, "a Cluster goes directly inside a Container"),
         Level::Package => (Level::Cluster, "a Package goes inside a Cluster"),
         Level::Folder => (Level::Package, "a Folder goes inside a Package"),
         _ => return,
@@ -235,11 +233,7 @@ fn ls_one(path: &str, opts: Opts) {
 
     // A single Item: just show that one entry.
     if st.kind != FileType::Directory {
-        let entry = Entry {
-            name: String::from(path),
-            level,
-            st: Some(st),
-        };
+        let entry = Entry { name: String::from(path), level, st: Some(st) };
         print_entries(&[entry], opts);
         return;
     }
@@ -266,11 +260,7 @@ fn ls_one(path: &str, opts: Opts) {
             let child = join(&a, &e.name);
             let st = file::stat(&child).ok();
             let kind = st.as_ref().map_or(e.kind, |s| s.kind);
-            Entry {
-                level: level_of(&child, kind),
-                name: e.name,
-                st,
-            }
+            Entry { level: level_of(&child, kind), name: e.name, st }
         })
         .collect();
 
@@ -333,13 +323,7 @@ fn print_entries(entries: &[Entry], opts: Opts) {
             kprint!("{:<9} ", e.level.name());
             vga::set_color(0x0F);
             match &e.st {
-                Some(s) => kprint!(
-                    "{:<5} {:>sw$} {} ",
-                    owner(s.uid),
-                    size,
-                    time::Stamp(s.mtime),
-                    sw = size_w
-                ),
+                Some(s) => kprint!("{:<5} {:>sw$} {} ", owner(s.uid), size, time::Stamp(s.mtime), sw = size_w),
                 None => kprint!("{:<5} {:>sw$} {:<16} ", "?", "?", "?", sw = size_w),
             }
             vga::set_color(e.level.color());
@@ -485,27 +469,196 @@ fn stat(args: &[&str]) {
                 kprintln!("  holds: {} entries", st.size);
             }
             kprintln!("  id: {}", st.ino);
-            kprintln!(
-                "  owner: {}    group: {}    mode: {:04o}",
-                st.uid,
-                st.gid,
-                st.mode
-            );
+            kprintln!("  owner: {}    group: {}    mode: {:04o}", st.uid, st.gid, st.mode);
             kprintln!("  modified: {}", time::Stamp(st.mtime));
         }
         Err(e) => kprintln!("stat: {}: {}", path, e),
     }
 }
 
-fn df() {
+// ---- tree -----------------------------------------------------------------------------
+
+const TREE_MAX_DEPTH: usize = 12;
+
+#[derive(Default)]
+struct Counts {
+    clusters: u32,
+    packages: u32,
+    folders: u32,
+    items: u32,
+}
+
+fn print_label(level: Level) {
+    vga::set_color(level.color());
+    kprint!("{}: ", level.name());
+    vga::set_color(0x0F);
+}
+
+/// Mount points of every ZodiacFS Container (the root and any mounted disks).
+fn zodiac_mounts() -> Vec<String> {
+    mount::list()
+        .into_iter()
+        .filter(|(_, fstype, _)| *fstype == "zodiacfs")
+        .map(|(path, _, _)| path)
+        .collect()
+}
+
+fn find_holders(dir: &str, name: &str, mounts: &[String], out: &mut Vec<String>, depth: usize) {
+    if depth >= TREE_MAX_DEPTH {
+        return;
+    }
+    let Ok(listing) = file::readdir(dir) else { return };
+    for e in listing {
+        if e.kind != FileType::Directory {
+            continue;
+        }
+        let child = join(dir, &e.name);
+        if mounts.iter().any(|m| *m == child) {
+            continue; // another Container: found through its own mount point
+        }
+        if e.name.eq_ignore_ascii_case(name) {
+            out.push(child.clone());
+        }
+        find_holders(&child, name, mounts, out, depth + 1);
+    }
+}
+
+/// Every Container, Cluster, Package or Folder with this name, as absolute paths.
+fn find_by_name(name: &str) -> Vec<String> {
+    let mounts = zodiac_mounts();
+    let mut out = Vec::new();
+    for mp in &mounts {
+        if filesystem::container_of(mp).0.eq_ignore_ascii_case(name) {
+            out.push(mp.clone());
+        }
+    }
+    for mp in &mounts {
+        find_holders(mp, name, &mounts, &mut out, 0);
+    }
+    out
+}
+
+/// tree                 the current path
+/// tree <path>          a path
+/// tree --<name>        the Container, Cluster, Package or Folder with that name
+fn tree(args: &[&str]) {
+    let mut roots: Vec<String> = Vec::new();
+    match args {
+        [] => roots.push(file::getcwd()),
+        [arg] if arg.starts_with("--") && arg.len() > 2 => {
+            let name = &arg[2..];
+            roots = find_by_name(name);
+            if roots.is_empty() {
+                kprintln!("tree: no Container, Cluster, Package or Folder named '{}'", name);
+                return;
+            }
+        }
+        [path] => match abs(path) {
+            Ok(p) => roots.push(p),
+            Err(e) => {
+                kprintln!("tree: {}: {}", path, e);
+                return;
+            }
+        },
+        _ => {
+            kprintln!("usage: tree [--name | path]");
+            kprintln!("  --name  a Container, Cluster, Package or Folder, by name");
+            return;
+        }
+    }
+    for (i, root) in roots.iter().enumerate() {
+        if i > 0 {
+            kprintln!();
+        }
+        tree_one(root);
+    }
+}
+
+fn tree_one(root: &str) {
+    let st = match file::stat(root) {
+        Ok(st) => st,
+        Err(e) => {
+            kprintln!("tree: {}: {}", root, e);
+            return;
+        }
+    };
+    let level = level_of(root, st.kind);
+    let name = if level == Level::Container {
+        filesystem::container_of(root).0
+    } else {
+        String::from(root.rsplit('/').next().unwrap_or(root))
+    };
+    print_label(level);
+    kprintln!("{}  ({})", name, root);
+
+    let mut counts = Counts::default();
+    if st.kind == FileType::Directory {
+        walk(root, "", 0, &mut counts);
+    }
+    kprintln!();
     kprintln!(
-        "{:<9} {:<8} {:>9} {:>9}  {}",
-        "TYPE",
-        "DEVICE",
-        "USED",
-        "TOTAL",
-        "MOUNTED ON"
+        "{} Clusters, {} Packages, {} Folders, {} Items",
+        counts.clusters,
+        counts.packages,
+        counts.folders,
+        counts.items
     );
+}
+
+fn walk(dir: &str, prefix: &str, depth: usize, counts: &mut Counts) {
+    if depth >= TREE_MAX_DEPTH {
+        return;
+    }
+    let Ok(listing) = file::readdir(dir) else { return };
+    let mut entries: Vec<Entry> = listing
+        .into_iter()
+        .map(|e| {
+            let child = join(dir, &e.name);
+            let st = file::stat(&child).ok();
+            let kind = st.as_ref().map_or(e.kind, |s| s.kind);
+            Entry { level: level_of(&child, kind), name: e.name, st }
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        rank(a.level).cmp(&rank(b.level)).then_with(|| {
+            a.name
+                .bytes()
+                .map(|c| c.to_ascii_lowercase())
+                .cmp(b.name.bytes().map(|c| c.to_ascii_lowercase()))
+        })
+    });
+
+    let n = entries.len();
+    for (i, e) in entries.iter().enumerate() {
+        let last = i + 1 == n;
+        kprint!("{}{}", prefix, if last { "`-- " } else { "|-- " });
+        let child = join(dir, &e.name);
+
+        if e.level == Level::Container {
+            // another Container mounted here: it has its own tree
+            let label = filesystem::container_of(&child).0;
+            print_label(Level::Container);
+            kprintln!("{}  (mounted here; see: tree --{})", label, label);
+            continue;
+        }
+
+        print_label(e.level);
+        kprintln!("{}", e.name);
+        match e.level {
+            Level::Cluster => counts.clusters += 1,
+            Level::Package => counts.packages += 1,
+            Level::Folder => counts.folders += 1,
+            _ => counts.items += 1,
+        }
+        if e.level != Level::Item {
+            let next = format!("{}{}", prefix, if last { "    " } else { "|   " });
+            walk(&child, &next, depth + 1, counts);
+        }
+    }
+}
+
+fn df() {
+    kprintln!("{:<9} {:<8} {:>9} {:>9}  {}", "TYPE", "DEVICE", "USED", "TOTAL", "MOUNTED ON");
     for (path, device, root) in mount::roots() {
         if let Ok((used, total)) = root.usage() {
             kprintln!(
@@ -522,11 +675,7 @@ fn df() {
 
 fn mounts() {
     for (path, fstype, device) in mount::list() {
-        let what = if fstype == "zodiacfs" {
-            "Container"
-        } else {
-            "Virtual"
-        };
+        let what = if fstype == "zodiacfs" { "Container" } else { "Virtual" };
         kprintln!("{:<8} {:<9} {} ({})", device, what, path, fstype);
     }
 }

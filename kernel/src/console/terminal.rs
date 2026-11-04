@@ -272,7 +272,9 @@ fn execute(line: &str) {
         "lspci" | "display" => hwcmd::run(parts[0]),
         "ps" | "threads" | "syncdemo" | "userdemo" => taskcmd::run(parts[0], args),
         "ls" | "cd" | "pwd" | "cat" | "newcluster" | "newpkg" | "newfldr" | "newfl" | "rm"
-        | "write" | "stat" | "mount" | "umount" | "lsblk" | "df" => fscmd::run(parts[0], args),
+        | "write" | "stat" | "mount" | "umount" | "lsblk" | "df" | "tree" => {
+            fscmd::run(parts[0], args)
+        }
         "ifconfig" | "ping" | "arp" | "wifi" => netcmd::run(parts[0], args),
         "tskmngr" => {
             use crate::console::{tskmngr, tskmngr_glue::*};
@@ -387,6 +389,11 @@ fn help() {
         "ls",
         "[-lh1rtS] [path]",
         "list a path; shows what each entry is",
+    );
+    help_line(
+        "tree",
+        "[--name | path]",
+        "show everything inside a Container, Cluster, Package or Folder",
     );
     help_line("cd", "[path]", "change path (no argument = home)");
     help_line("pwd", "", "current path and its level");
