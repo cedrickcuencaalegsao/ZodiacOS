@@ -27,7 +27,6 @@ mod vga;
 pub(crate) use {
     base::sync,
     drivers::{keyboard, serial},
-    filesystem::zdfs as fs,
     legacy::package,
     memory::virtual_memory as paging,
     memory::{heap, physical as pmm},

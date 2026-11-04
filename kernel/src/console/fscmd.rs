@@ -1,6 +1,7 @@
 use crate::drivers::storage;
 use crate::filesystem::file::{self, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
-use crate::filesystem::{self, FileType, Stat, mount};
+use crate::filesystem::path::{resolve_against, split_parent};
+use crate::filesystem::{self, FileType, Level, Stat, level_of, mount};
 use crate::{kprint, kprintln, time, vga};
 use alloc::{format, string::String, vec::Vec};
 use core::cmp::Ordering;
@@ -9,18 +10,15 @@ use errors::Result;
 #[derive(Default, Clone, Copy)]
 struct Opts {
     long: bool,
-    all: bool,
     human: bool,
-    classify: bool,
-    one: bool,
     reverse: bool,
     by_time: bool,
     by_size: bool,
 }
 
-struct Item {
+struct Entry {
     name: String,
-    kind: FileType,
+    level: Level,
     st: Option<Stat>,
 }
 
@@ -28,17 +26,34 @@ pub fn run(cmd: &str, args: &[&str]) {
     match cmd {
         "ls" => ls(args),
         "cd" => cd(args),
-        "pwd" => kprintln!("{}", file::getcwd()),
+        "pwd" => pwd(),
         "cat" => cat(args),
-        "mkdir" | "newfldr" => each(args, cmd, |p| file::mkdir(p, 0o755)),
-        "touch" | "newfl" => each(args, cmd, touch),
-        "rm" => each(args, cmd, file::unlink),
-        "rmdir" => each(args, cmd, file::rmdir),
+        "newcluster" => make(args, cmd, Level::Cluster),
+        "newpkg" => make(args, cmd, Level::Package),
+        "newfldr" => make(args, cmd, Level::Folder),
+        "newfl" => new_item(args),
+        "rm" => each(args, cmd, remove),
         "write" => write(args),
         "stat" => stat(args),
         "mount" => mounts(),
+        "umount" => each(args, cmd, |p| mount::umount(&abs(p)?)),
+        "df" => df(),
         "lsblk" | "drives" => lsblk(),
         _ => {}
+    }
+}
+
+// ---- helpers ----------------------------------------------------------------
+
+fn abs(path: &str) -> Result<String> {
+    resolve_against(&file::getcwd(), path)
+}
+
+fn join(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{}{}", dir, name)
+    } else {
+        format!("{}/{}", dir, name)
     }
 }
 
@@ -54,49 +69,114 @@ fn each(args: &[&str], cmd: &str, op: impl Fn(&str) -> Result<()>) {
     }
 }
 
-fn touch(path: &str) -> Result<()> {
-    let fd = file::open(path, O_CREAT | O_WRONLY, 0o644)?;
-    file::close(fd)
+/// What `parent` is, as a Level. Err carries a printable message.
+fn level_at(path: &str) -> core::result::Result<Level, String> {
+    let a = abs(path).map_err(|e| format!("{}", e))?;
+    let st = file::stat(&a).map_err(|e| format!("{}", e))?;
+    Ok(level_of(&a, st.kind))
 }
 
-fn join(dir: &str, name: &str) -> String {
-    if dir.ends_with('/') {
-        format!("{}{}", dir, name)
-    } else {
-        format!("{}/{}", dir, name)
+// ---- creating and removing ----------------------------------------------------
+
+/// newcluster / newpkg / newfldr: the new object's level must fit its parent.
+fn make(args: &[&str], cmd: &str, want: Level) {
+    if args.is_empty() {
+        kprintln!("usage: {} <name...>", cmd);
+        return;
+    }
+    let (need, hint) = match want {
+        Level::Cluster => (
+            Level::Container,
+            "a Cluster goes directly inside a Container",
+        ),
+        Level::Package => (Level::Cluster, "a Package goes inside a Cluster"),
+        Level::Folder => (Level::Package, "a Folder goes inside a Package"),
+        _ => return,
+    };
+    for path in args {
+        if let Err(msg) = create_level(path, want, need, hint) {
+            kprintln!("{}: {}: {}", cmd, path, msg);
+        }
     }
 }
 
-fn mode_string(kind: FileType, mode: u16) -> String {
-    let mut s = String::with_capacity(10);
-    s.push(match kind {
-        FileType::Directory => 'd',
-        FileType::CharDevice => 'c',
-        FileType::File => '-',
-    });
-    for shift in [6, 3, 0] {
-        let bits = (mode >> shift) & 7;
-        s.push(if bits & 4 != 0 { 'r' } else { '-' });
-        s.push(if bits & 2 != 0 { 'w' } else { '-' });
-        s.push(if bits & 1 != 0 { 'x' } else { '-' });
+fn create_level(
+    path: &str,
+    want: Level,
+    need: Level,
+    hint: &str,
+) -> core::result::Result<(), String> {
+    let a = abs(path).map_err(|e| format!("{}", e))?;
+    let (parent, _) = split_parent(&a).map_err(|e| format!("{}", e))?;
+    let have = level_at(parent)?;
+    if have != need {
+        return Err(format!(
+            "cannot create a {} inside a {} ({})",
+            want.name(),
+            have.name(),
+            hint
+        ));
     }
-    s
+    file::mkdir(&a, 0o755).map_err(|e| format!("{}", e))
 }
 
-#[allow(dead_code)]
-fn print_long(name: &str, st: &Stat) {
+/// newfl: an Item goes inside a Package (directly) or inside a Folder.
+fn new_item(args: &[&str]) {
+    if args.is_empty() {
+        kprintln!("usage: newfl <name...>");
+        return;
+    }
+    for path in args {
+        let result = (|| -> core::result::Result<(), String> {
+            let a = abs(path).map_err(|e| format!("{}", e))?;
+            let (parent, _) = split_parent(&a).map_err(|e| format!("{}", e))?;
+            let have = level_at(parent)?;
+            if have != Level::Package && have != Level::Folder {
+                return Err(format!(
+                    "cannot create an Item inside a {} (an Item goes inside a Package or a Folder)",
+                    have.name()
+                ));
+            }
+            let fd = file::open(&a, O_CREAT | O_WRONLY, 0o644).map_err(|e| format!("{}", e))?;
+            file::close(fd).map_err(|e| format!("{}", e))
+        })();
+        if let Err(msg) = result {
+            kprintln!("newfl: {}: {}", path, msg);
+        }
+    }
+}
+
+/// rm: removes an Item, or an empty Folder, Package or Cluster.
+fn remove(path: &str) -> Result<()> {
+    let st = file::stat(path)?;
     if st.kind == FileType::Directory {
-        vga::set_color(0x0B);
+        file::rmdir(path)
+    } else {
+        file::unlink(path)
     }
-    kprintln!(
-        "{} {:>8} {} {}",
-        mode_string(st.kind, st.mode),
-        st.size,
-        time::Stamp(st.mtime),
-        name
-    );
-    vga::set_color(0x0F);
 }
+
+// ---- navigation ------------------------------------------------------------------
+
+fn cd(args: &[&str]) {
+    let target = match args.first() {
+        Some(path) => String::from(*path),
+        None => filesystem::home_dir(),
+    };
+    if let Err(e) = file::chdir(&target) {
+        kprintln!("cd: {}: {}", target, e);
+    }
+}
+
+fn pwd() {
+    let cwd = file::getcwd();
+    match level_at(&cwd) {
+        Ok(level) => kprintln!("{}  [{}]", cwd, level.name()),
+        Err(_) => kprintln!("{}", cwd),
+    }
+}
+
+// ---- ls ------------------------------------------------------------------------------
 
 fn ls(args: &[&str]) {
     let mut opts = Opts::default();
@@ -107,16 +187,14 @@ fn ls(args: &[&str]) {
             for c in arg[1..].chars() {
                 match c {
                     'l' => opts.long = true,
-                    'a' => opts.all = true,
                     'h' => opts.human = true,
-                    'F' => opts.classify = true,
-                    '1' => opts.one = true,
+                    '1' => {} // one entry per line is now the default
                     'r' => opts.reverse = true,
                     't' => opts.by_time = true,
                     'S' => opts.by_size = true,
                     _ => {
                         kprintln!("ls: invalid option -- '{}'", c);
-                        kprintln!("usage: ls [-lahF1rtS] [path...]");
+                        kprintln!("usage: ls [-lh1rtS] [path...]");
                         return;
                     }
                 }
@@ -131,169 +209,152 @@ fn ls(args: &[&str]) {
 
     let multi = paths.len() > 1;
     for (i, path) in paths.iter().enumerate() {
-        if multi {
-            if i > 0 {
-                kprintln!();
-            }
-            kprintln!("{}:", path);
+        if multi && i > 0 {
+            kprintln!();
         }
         ls_one(path, opts);
     }
 }
 
 fn ls_one(path: &str, opts: Opts) {
-    let st = match file::stat(path) {
+    let a = match abs(path) {
+        Ok(a) => a,
+        Err(e) => {
+            kprintln!("ls: cannot access '{}': {}", path, e);
+            return;
+        }
+    };
+    let st = match file::stat(&a) {
         Ok(st) => st,
         Err(e) => {
             kprintln!("ls: cannot access '{}': {}", path, e);
             return;
         }
     };
+    let level = level_of(&a, st.kind);
 
-    // A plain file: just show that one entry.
+    // A single Item: just show that one entry.
     if st.kind != FileType::Directory {
-        let item = Item {
+        let entry = Entry {
             name: String::from(path),
-            kind: st.kind,
+            level,
             st: Some(st),
         };
-        print_items(&[item], opts);
+        print_entries(&[entry], opts);
         return;
     }
 
-    let entries = match file::readdir(path) {
-        Ok(e) => e,
+    let listing = match file::readdir(&a) {
+        Ok(l) => l,
         Err(e) => {
             kprintln!("ls: cannot open '{}': {}", path, e);
             return;
         }
     };
 
+    // Header: what we are looking inside of.
+    kprint!("[");
+    vga::set_color(level.color());
+    kprint!("{}", level.name());
+    vga::set_color(0x0F);
+    kprintln!("] {}", a);
+
     // stat every entry once, so sorting and -l don't hit the filesystem twice
-    let mut items: Vec<Item> = entries
+    let mut entries: Vec<Entry> = listing
         .into_iter()
-        .filter(|e| opts.all || !e.name.starts_with('.'))
         .map(|e| {
-            let st = file::stat(&join(path, &e.name)).ok();
-            Item {
+            let child = join(&a, &e.name);
+            let st = file::stat(&child).ok();
+            let kind = st.as_ref().map_or(e.kind, |s| s.kind);
+            Entry {
+                level: level_of(&child, kind),
                 name: e.name,
-                kind: e.kind,
                 st,
             }
         })
         .collect();
 
-    items.sort_by(|a, b| compare(a, b, opts));
+    entries.sort_by(|x, y| compare(x, y, opts));
     if opts.reverse {
-        items.reverse();
+        entries.reverse();
     }
-
-    print_items(&items, opts);
+    print_entries(&entries, opts);
 }
 
-fn compare(a: &Item, b: &Item, opts: Opts) -> Ordering {
+/// Position of a level when sorting: containers of things first, Items last.
+fn rank(l: Level) -> u8 {
+    match l {
+        Level::Container => 0,
+        Level::Cluster => 1,
+        Level::Package => 2,
+        Level::Folder => 3,
+        Level::Item => 4,
+    }
+}
+
+fn compare(a: &Entry, b: &Entry, opts: Opts) -> Ordering {
     let by_name = || {
         a.name
             .bytes()
             .map(|c| c.to_ascii_lowercase())
             .cmp(b.name.bytes().map(|c| c.to_ascii_lowercase()))
     };
-
     if opts.by_time {
-        let t = |i: &Item| i.st.as_ref().map_or(0, |s| s.mtime);
+        let t = |e: &Entry| e.st.as_ref().map_or(0, |s| s.mtime);
         return t(b).cmp(&t(a)).then_with(by_name);
     }
     if opts.by_size {
-        let s = |i: &Item| i.st.as_ref().map_or(0, |s| s.size);
+        let s = |e: &Entry| e.st.as_ref().map_or(0, |s| s.size);
         return s(b).cmp(&s(a)).then_with(by_name);
     }
-
-    // default: directories first, then name (case-insensitive)
-    let a_dir = a.kind == FileType::Directory;
-    let b_dir = b.kind == FileType::Directory;
-    b_dir.cmp(&a_dir).then_with(by_name)
+    rank(a.level).cmp(&rank(b.level)).then_with(by_name)
 }
 
-fn display_name(item: &Item, opts: Opts) -> String {
-    if opts.classify && item.kind == FileType::Directory {
-        format!("{}/", item.name)
-    } else {
-        item.name.clone()
-    }
-}
-
-fn name_color(item: &Item) -> u8 {
-    if item.kind == FileType::Directory {
-        0x0B
-    } else {
-        0x0F
-    }
-}
-
-fn print_items(items: &[Item], opts: Opts) {
-    if items.is_empty() {
+fn print_entries(entries: &[Entry], opts: Opts) {
+    if entries.is_empty() {
+        kprintln!("(empty)");
         return;
     }
 
     if opts.long {
-        let sizes: Vec<String> = items
+        // Items show their size; everything else is a holder, so size is "-".
+        let sizes: Vec<String> = entries
             .iter()
-            .map(|i| fmt_size(i.st.as_ref().map_or(0, |s| s.size), opts.human))
+            .map(|e| match (&e.st, e.level) {
+                (Some(s), Level::Item) => fmt_size(s.size, opts.human),
+                (Some(_), _) => String::from("-"),
+                (None, _) => String::from("?"),
+            })
             .collect();
         let size_w = sizes.iter().map(|s| s.len()).max().unwrap_or(1);
 
-        for (item, size) in items.iter().zip(&sizes) {
-            match &item.st {
+        for (e, size) in entries.iter().zip(&sizes) {
+            vga::set_color(e.level.color());
+            kprint!("{:<9} ", e.level.name());
+            vga::set_color(0x0F);
+            match &e.st {
                 Some(s) => kprint!(
-                    "{} {:<5} {:>sw$} {} ",
-                    mode_string(s.kind, s.mode),
+                    "{:<5} {:>sw$} {} ",
                     owner(s.uid),
                     size,
                     time::Stamp(s.mtime),
                     sw = size_w
                 ),
-                None => kprint!(
-                    "{:<10} {:<5} {:>sw$} {:<16} ",
-                    "?",
-                    "?",
-                    "?",
-                    "?",
-                    sw = size_w
-                ),
+                None => kprint!("{:<5} {:>sw$} {:<16} ", "?", "?", "?", sw = size_w),
             }
-            vga::set_color(name_color(item));
-            kprintln!("{}", display_name(item, opts));
+            vga::set_color(e.level.color());
+            kprintln!("{}", e.name);
             vga::set_color(0x0F);
         }
         return;
     }
 
-    if opts.one {
-        for item in items {
-            vga::set_color(name_color(item));
-            kprintln!("{}", display_name(item, opts));
-            vga::set_color(0x0F);
-        }
-        return;
-    }
-
-    // Short format: column-major grid like real ls (fills down, then across)
-    let names: Vec<String> = items.iter().map(|i| display_name(i, opts)).collect();
-    let cell = names.iter().map(|n| n.len()).max().unwrap_or(0) + 2;
-    let cols = core::cmp::max(1, vga::width() / cell);
-    let rows = (items.len() + cols - 1) / cols;
-
-    for r in 0..rows {
-        for c in 0..cols {
-            let idx = c * rows + r;
-            if idx >= items.len() {
-                break;
-            }
-            vga::set_color(name_color(&items[idx]));
-            kprint!("{:<w$}", names[idx], w = cell);
-            vga::set_color(0x0F);
-        }
-        kprintln!();
+    // One line per entry, "<Level>: <name>", so the kind is always spelled out.
+    for e in entries {
+        vga::set_color(e.level.color());
+        kprint!("{}: ", e.level.name());
+        vga::set_color(0x0F);
+        kprintln!("{}", e.name);
     }
 }
 
@@ -302,14 +363,6 @@ fn owner(uid: u32) -> String {
         String::from("root")
     } else {
         format!("{}", uid)
-    }
-}
-
-#[allow(dead_code)]
-fn type_label(kind: FileType) -> &'static str {
-    match kind {
-        FileType::Directory => "dir",
-        _ => "file",
     }
 }
 
@@ -333,49 +386,11 @@ fn fmt_size(bytes: u64, human: bool) -> String {
     }
 }
 
-/// Unix seconds -> "YYYY-MM-DD HH:MM" (UTC)
-#[allow(dead_code)]
-fn fmt_time(ts: u64) -> String {
-    if ts == 0 {
-        return String::from("-");
-    }
-    let days = (ts / 86_400) as i64;
-    let secs = ts % 86_400;
-
-    // days since 1970-01-01 -> civil date (Howard Hinnant's algorithm)
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        y,
-        m,
-        d,
-        secs / 3600,
-        (secs % 3600) / 60
-    )
-}
-
-fn cd(args: &[&str]) {
-    let target = match args.first() {
-        Some(path) => String::from(*path),
-        None => filesystem::home_dir(),
-    };
-    if let Err(e) = file::chdir(&target) {
-        kprintln!("cd: {}: {}", target, e);
-    }
-}
+// ---- reading and writing Items ----------------------------------------------------------
 
 fn cat(args: &[&str]) {
     if args.is_empty() {
-        kprintln!("usage: cat <file...>");
+        kprintln!("usage: cat <item...>");
         return;
     }
     for path in args {
@@ -418,7 +433,7 @@ fn write(args: &[&str]) {
     let append = args.first() == Some(&"-a");
     let rest = if append { &args[1..] } else { args };
     if rest.len() < 2 {
-        kprintln!("usage: write [-a] <file> <text...>");
+        kprintln!("usage: write [-a] <item> <text...>");
         return;
     }
     let mut text = String::new();
@@ -442,34 +457,39 @@ fn write(args: &[&str]) {
     }
 }
 
+// ---- information ------------------------------------------------------------------------------
+
 fn stat(args: &[&str]) {
     let Some(&path) = args.first() else {
         kprintln!("usage: stat <path>");
         return;
     };
-    match file::stat(path) {
+    let a = match abs(path) {
+        Ok(a) => a,
+        Err(e) => {
+            kprintln!("stat: {}: {}", path, e);
+            return;
+        }
+    };
+    match file::stat(&a) {
         Ok(st) => {
-            kprintln!("  file: {}", path);
+            let level = level_of(&a, st.kind);
+            kprintln!("  path: {}", a);
+            kprint!("  type: ");
+            vga::set_color(level.color());
+            kprintln!("{}", level.name());
+            vga::set_color(0x0F);
+            if level == Level::Item {
+                kprintln!("  size: {} bytes", st.size);
+            } else {
+                kprintln!("  holds: {} entries", st.size);
+            }
+            kprintln!("  id: {}", st.ino);
             kprintln!(
-                "  type: {}",
-                match st.kind {
-                    FileType::File => "regular file",
-                    FileType::Directory => "directory",
-                    FileType::CharDevice => "character device",
-                }
-            );
-            kprintln!(
-                "  size: {}    inode: {}    links: {}",
-                st.size,
-                st.ino,
-                st.nlink
-            );
-            kprintln!(
-                "  mode: {} ({:04o})    uid: {}    gid: {}",
-                mode_string(st.kind, st.mode),
-                st.mode,
+                "  owner: {}    group: {}    mode: {:04o}",
                 st.uid,
-                st.gid
+                st.gid,
+                st.mode
             );
             kprintln!("  modified: {}", time::Stamp(st.mtime));
         }
@@ -477,9 +497,37 @@ fn stat(args: &[&str]) {
     }
 }
 
+fn df() {
+    kprintln!(
+        "{:<9} {:<8} {:>9} {:>9}  {}",
+        "TYPE",
+        "DEVICE",
+        "USED",
+        "TOTAL",
+        "MOUNTED ON"
+    );
+    for (path, device, root) in mount::roots() {
+        if let Ok((used, total)) = root.usage() {
+            kprintln!(
+                "{:<9} {:<8} {:>6} KB {:>6} KB  {}",
+                "Container",
+                device,
+                used / 1024,
+                total / 1024,
+                path
+            );
+        }
+    }
+}
+
 fn mounts() {
     for (path, fstype, device) in mount::list() {
-        kprintln!("{} on {} type {}", device, path, fstype);
+        let what = if fstype == "zodiacfs" {
+            "Container"
+        } else {
+            "Virtual"
+        };
+        kprintln!("{:<8} {:<9} {} ({})", device, what, path, fstype);
     }
 }
 

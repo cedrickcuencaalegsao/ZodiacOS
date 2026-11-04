@@ -1,9 +1,8 @@
 use crate::console::netcmd;
 use crate::console::{fscmd, hwcmd, memcmd, taskcmd, zpm_cmd};
-use crate::filesystem::{self, file};
-use crate::{arch, fs, interrupts, keyboard, user, vga};
+use crate::filesystem::{self, Level, file};
+use crate::{arch, interrupts, keyboard, user, vga};
 use crate::{kprint, kprintln};
-use alloc::{format, string::String};
 use core::fmt;
 use shared::kassert_eq;
 
@@ -85,31 +84,37 @@ pub fn run() -> ! {
 
 fn print_prompt() {
     let u = user::get();
-
-    // "/" is the root, "~" stands for the home directory
-    let cwd = file::getcwd();
-    let home = filesystem::home_dir();
-    let shown = if cwd == "/" {
-        String::from("/")
-    } else if cwd == home {
-        String::from("/~")
-    } else if let Some(rest) = cwd
-        .strip_prefix(home.as_str())
-        .and_then(|r| r.strip_prefix('/'))
-    {
-        format!("/~/{}", rest)
-    } else {
-        cwd.clone()
-    };
-
     vga::set_color(0x0A); // green: username
     kprint!("{}", user::as_str(&u));
     vga::set_color(0x0F);
     kprint!("@");
     vga::set_color(0x0B); // light cyan: hostname
     kprint!("zodiacos");
-    vga::set_color(if shown.starts_with("/~") { 0x0E } else { 0x09 });
-    kprint!("{}", shown);
+    vga::set_color(0x0F);
+    kprint!("/");
+
+    // [Container]/{Cluster}/Package/Folder, each part in its level's color
+    let (container, rest) = filesystem::container_of(&file::getcwd());
+    vga::set_color(Level::Container.color());
+    kprint!("[{}]", container);
+    for (i, part) in rest.split('/').filter(|p| !p.is_empty()).enumerate() {
+        vga::set_color(0x0F);
+        kprint!("/");
+        match i {
+            0 => {
+                vga::set_color(Level::Cluster.color());
+                kprint!("{{{}}}", part);
+            }
+            1 => {
+                vga::set_color(Level::Package.color());
+                kprint!("{}", part);
+            }
+            _ => {
+                vga::set_color(Level::Folder.color());
+                kprint!("{}", part);
+            }
+        }
+    }
     vga::set_color(0x0F);
     kprint!("> ");
 }
@@ -216,17 +221,7 @@ fn execute(line: &str) {
             }
         }
 
-        // ---- Drives and files ----
-        // ls, cd, pwd, cat, write, rm, mkdir, touch, rmdir, stat, mount, lsblk
-        // are handled by fscmd below.
-        "format" => match fs::format() {
-            Ok(()) => kprintln!("hdb formatted (ZDFS)"),
-            Err(e) => kprintln!("format: {}", e),
-        },
-        "df" => match fs::usage() {
-            Ok((used, total)) => kprintln!("{} KB used of {} KB", used / 2, total / 2),
-            Err(e) => kprintln!("df: {}", e),
-        },
+        "format" => format_cmd(args),
         "whoami" => {
             let u = user::get();
             kprintln!("{}", user::as_str(&u));
@@ -276,8 +271,8 @@ fn execute(line: &str) {
         "meminfo" | "memmap" | "vmem" | "memtest" | "vmtest" => memcmd::run(parts[0], args),
         "lspci" | "display" => hwcmd::run(parts[0]),
         "ps" | "threads" | "syncdemo" | "userdemo" => taskcmd::run(parts[0], args),
-        "ls" | "cd" | "pwd" | "cat" | "mkdir" | "touch" | "rm" | "rmdir" | "write" | "stat"
-        | "mount" | "lsblk" => fscmd::run(parts[0], args),
+        "ls" | "cd" | "pwd" | "cat" | "newcluster" | "newpkg" | "newfldr" | "newfl" | "rm"
+        | "write" | "stat" | "mount" | "umount" | "lsblk" | "df" => fscmd::run(parts[0], args),
         "ifconfig" | "ping" | "arp" | "wifi" => netcmd::run(parts[0], args),
         "tskmngr" => {
             use crate::console::{tskmngr, tskmngr_glue::*};
@@ -300,6 +295,25 @@ fn execute(line: &str) {
 
         // Installed packages can't be launched yet (zpm_core has no launcher).
         other => kprintln!("{}: command not found (try 'help')", other),
+    }
+}
+
+fn format_cmd(args: &[&str]) {
+    let label = args.first().copied().filter(|a| *a != "--yes");
+    match (label, args.contains(&"--yes")) {
+        (Some(l), true) => match filesystem::format_data(l) {
+            Ok(()) => kprintln!(
+                "hdb formatted as Container '{}', mounted at {}",
+                l,
+                filesystem::DATA_MOUNT
+            ),
+            Err(e) => kprintln!("format: {}", e),
+        },
+        (Some(l), false) => {
+            kprintln!("format ERASES hdb and creates a Container named '{}'.", l);
+            kprintln!("Run: format {} --yes", l);
+        }
+        _ => kprintln!("usage: format <name> --yes"),
     }
 }
 
@@ -368,21 +382,39 @@ fn help() {
         "trigger a test crash",
     );
 
-    help_heading("Files and drives:");
-    help_line("ls", "[-l] [path]", "list a directory");
-    help_line("cd", "[path]", "change directory (no argument = home)");
-    help_line("pwd", "", "show the current directory");
-    help_line("cat", "<file...>", "print files");
-    help_line("write", "[-a] <file> <text>", "write text to a file");
-    help_line("mkdir", "<path...>", "create directories");
-    help_line("touch", "<path...>", "create empty files");
-    help_line("rm", "<path...>", "delete files");
-    help_line("rmdir", "<path...>", "delete empty directories");
-    help_line("stat", "<path>", "file details");
-    help_line("df", "", "disk usage");
-    help_line("mount", "", "list mounted filesystems");
+    help_heading("Files (Container > Cluster > Package > Folder > Item):");
+    help_line(
+        "ls",
+        "[-lh1rtS] [path]",
+        "list a path; shows what each entry is",
+    );
+    help_line("cd", "[path]", "change path (no argument = home)");
+    help_line("pwd", "", "current path and its level");
+    help_line("cat", "<item...>", "print items");
+    help_line("write", "[-a] <item> <text>", "write text to an item");
+    help_line(
+        "newcluster",
+        "<path...>",
+        "create a Cluster (inside a Container)",
+    );
+    help_line("newpkg", "<path...>", "create a Package (inside a Cluster)");
+    help_line("newfldr", "<path...>", "create a Folder (inside a Package)");
+    help_line(
+        "newfl",
+        "<path...>",
+        "create an Item (inside a Package or Folder)",
+    );
+    help_line("rm", "<path...>", "delete an Item or an empty holder");
+    help_line("stat", "<path>", "show what a path is");
+    help_line("df", "", "Container usage");
+    help_line("mount", "", "list Containers and virtual mounts");
+    help_line("umount", "<path>", "unmount a Container");
     help_line("lsblk", "", "list disks");
-    help_line("format", "", "format hdb (erases everything)");
+    help_line(
+        "format",
+        "<name> --yes",
+        "format hdb as a Container (erases everything)",
+    );
 
     help_heading("Built-in Text editor");
     help_line("zedit", "[file|.]", "text editor (.txt, .config)");

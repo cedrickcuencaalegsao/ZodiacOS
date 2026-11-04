@@ -43,7 +43,7 @@ impl ProcFiles {
             fds: core::array::from_fn(|_| None),
         };
         // stdin, stdout and stderr all go to the console (once devfs is mounted)
-        if let Ok(console) = vfs::resolve("/dev/console") {
+        if let Ok(console) = vfs::resolve(super::CONSOLE_PATH) {
             let file = Arc::new(OpenFile {
                 inode: console,
                 flags: O_RDWR,

@@ -191,11 +191,11 @@ pub fn run() -> Session {
     let session = login_manager::run(&mut platform);
 
     if platform.auth.dirty() {
-        let _ = crate::fs::write(
-            PASSWD_PATH,
-            PASSWD_MODE,
-            platform.auth.serialize().as_bytes(),
-        );
+        // let _ = crate::fs::write(
+        //     PASSWD_PATH,
+        //     PASSWD_MODE,
+        //     platform.auth.serialize().as_bytes(),
+        // );
     }
     session
 }

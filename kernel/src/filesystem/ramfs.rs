@@ -1,19 +1,35 @@
+//! RAM filesystem, hardened per MEMORYSECURITY.md:
+//! * file contents live in `SecureBuf`: zeroized on truncate, unlink, drop,
+//!   and when a grow reallocates (no stale copies left on the kernel heap);
+//! * total bytes, per-file size, node count and directory size are all bounded,
+//!   and every allocation is fallible, so a process cannot exhaust the heap;
+//! * ownership is explicit: a node's memory is freed (and wiped) exactly when
+//!   the last `Arc` (directory entry or open descriptor) goes away;
+//! * ramfs never hands out mappings of its buffers. Executable pages must be
+//!   created by the loader by copying into fresh pages (W^X, §4).
+
 use super::inode::{DirEntry, FileType, Inode, Stat};
 use super::path::check_name;
 use crate::base::sync::Mutex;
+use crate::memory::memsecurity::secure_alloc::SecureBuf;
 use crate::time;
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use errors::{Error, Result};
 
 const MAX_FILE_SIZE: u64 = 64 * 1024 * 1024;
+const MAX_NODES: usize = 16_384;
+const MAX_DIR_ENTRIES: usize = 4_096;
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(1);
+static NODES: AtomicUsize = AtomicUsize::new(0);
 
 struct Inner {
     mode: u16,
+    uid: u32,
+    gid: u32,
     mtime: u32,
-    data: Vec<u8>,                            // file contents
+    data: SecureBuf,                          // file contents
     children: BTreeMap<String, Arc<RamNode>>, // directory entries
 }
 
@@ -24,17 +40,27 @@ pub struct RamNode {
 }
 
 impl RamNode {
-    fn new(kind: FileType, mode: u16) -> Arc<RamNode> {
+    fn build(kind: FileType, mode: u16) -> Arc<RamNode> {
         Arc::new(RamNode {
             ino: NEXT_INO.fetch_add(1, Relaxed),
             kind,
             inner: Mutex::new(Inner {
                 mode,
+                uid: 0,
+                gid: 0,
                 mtime: time::now(),
-                data: Vec::new(),
+                data: SecureBuf::new(),
                 children: BTreeMap::new(),
             }),
         })
+    }
+
+    /// Like `build`, but refuses once the node limit is reached.
+    fn try_new(kind: FileType, mode: u16) -> Result<Arc<RamNode>> {
+        NODES
+            .try_update(Relaxed, Relaxed, |n| (n < MAX_NODES).then_some(n + 1))
+            .map_err(|_| Error::NoSpace)?;
+        Ok(RamNode::build(kind, mode))
     }
 
     fn is_dir(&self) -> bool {
@@ -42,8 +68,15 @@ impl RamNode {
     }
 }
 
+impl Drop for RamNode {
+    fn drop(&mut self) {
+        NODES.fetch_sub(1, Relaxed); // its SecureBuf wipes itself in its own Drop
+    }
+}
+
 pub fn new_root() -> Arc<dyn Inode> {
-    RamNode::new(FileType::Directory, 0o755)
+    NODES.fetch_add(1, Relaxed);
+    RamNode::build(FileType::Directory, 0o755)
 }
 
 impl Inode for RamNode {
@@ -58,8 +91,8 @@ impl Inode for RamNode {
                 i.data.len() as u64
             },
             mode: i.mode,
-            uid: 0,
-            gid: 0,
+            uid: i.uid,
+            gid: i.gid,
             mtime: i.mtime,
             nlink: if self.is_dir() { 2 } else { 1 },
         })
@@ -70,12 +103,14 @@ impl Inode for RamNode {
             return Err(Error::IsADirectory);
         }
         let i = self.inner.lock();
-        let len = i.data.len() as u64;
+        let data = i.data.as_slice();
+        let len = data.len() as u64;
         if offset >= len {
             return Ok(0);
         }
-        let n = buf.len().min((len - offset) as usize);
-        buf[..n].copy_from_slice(&i.data[offset as usize..offset as usize + n]);
+        let start = offset as usize;
+        let n = buf.len().min(data.len() - start);
+        buf[..n].copy_from_slice(&data[start..start + n]);
         Ok(n)
     }
 
@@ -95,11 +130,11 @@ impl Inode for RamNode {
         let end = end as usize;
         let mut i = self.inner.lock();
         if end > i.data.len() {
-            let extra = end - i.data.len();
-            i.data.try_reserve(extra).map_err(|_| Error::NoSpace)?;
-            i.data.resize(end, 0); // a write past the end leaves a hole of zeros
+            // a write past the end leaves a hole of zeros
+            i.data.resize(end, MAX_FILE_SIZE as usize)?;
         }
-        i.data[offset as usize..end].copy_from_slice(data);
+        let start = offset as usize;
+        i.data.as_mut_slice()[start..end].copy_from_slice(data);
         i.mtime = time::now();
         Ok(data.len())
     }
@@ -111,13 +146,8 @@ impl Inode for RamNode {
         if size > MAX_FILE_SIZE {
             return Err(Error::NoSpace);
         }
-        let size = size as usize;
         let mut i = self.inner.lock();
-        if size > i.data.len() {
-            let extra = size - i.data.len();
-            i.data.try_reserve(extra).map_err(|_| Error::NoSpace)?;
-        }
-        i.data.resize(size, 0);
+        i.data.resize(size as usize, MAX_FILE_SIZE as usize)?; // shrinking wipes the tail
         i.mtime = time::now();
         Ok(())
     }
@@ -145,7 +175,10 @@ impl Inode for RamNode {
         if i.children.contains_key(name) {
             return Err(Error::AlreadyExists);
         }
-        let node = RamNode::new(kind, mode);
+        if i.children.len() >= MAX_DIR_ENTRIES {
+            return Err(Error::NoSpace);
+        }
+        let node = RamNode::try_new(kind, mode)?;
         i.children.insert(String::from(name), node.clone());
         i.mtime = time::now();
         Ok(node as Arc<dyn Inode>)
@@ -160,6 +193,8 @@ impl Inode for RamNode {
         if child.is_dir() && !child.inner.lock().children.is_empty() {
             return Err(Error::NotEmpty);
         }
+        // Removing the entry drops one Arc; if no descriptor still holds the
+        // file, its SecureBuf is zeroized right here.
         i.children.remove(name);
         i.mtime = time::now();
         Ok(())

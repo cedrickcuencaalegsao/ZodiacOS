@@ -72,3 +72,12 @@ pub fn list() -> Vec<(String, &'static str, String)> {
         .map(|m| (m.path.clone(), m.fstype, m.device.clone()))
         .collect()
 }
+
+/// (mount point, device, root inode) for every mount.
+pub fn roots() -> Vec<(String, String, Arc<dyn Inode>)> {
+    MOUNTS
+        .lock()
+        .iter()
+        .map(|m| (m.path.clone(), m.device.clone(), m.root.clone()))
+        .collect()
+}

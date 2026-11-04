@@ -2,6 +2,7 @@
 pub mod allocator; // the #[global_allocator] (free-list heap)
 pub mod heap; // maps the heap region and hands it to the allocator
 pub mod layout; // linker-script symbols (kernel image and section addresses)
+pub mod memsecurity;
 pub mod physical; // frame allocator (E820 map + bitmap)
 pub mod protection; // CPUID detection, NXE, CR0.WP, SMEP/SMAP
 pub mod security; // Perm, MemoryPolicy, W^X enforcement
@@ -33,7 +34,10 @@ pub fn selftest() {
         user: false,
         uncached: false,
     };
-    kassert!(bad.leaf_flags().is_err(), "W^X check did not reject a W+X mapping");
+    kassert!(
+        bad.leaf_flags().is_err(),
+        "W^X check did not reject a W+X mapping"
+    );
 
     // frame allocator
     let a = physical::alloc_frame().unwrap();
@@ -44,7 +48,10 @@ pub fn selftest() {
 
     // heap
     let v = alloc::vec![1u64, 2, 3];
-    kassert!(v.iter().sum::<u64>() == 6, "heap allocation returned bad data");
+    kassert!(
+        v.iter().sum::<u64>() == 6,
+        "heap allocation returned bad data"
+    );
 
     crate::log_info!("memory: selftest passed");
 }

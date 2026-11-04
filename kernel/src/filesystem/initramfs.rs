@@ -1,5 +1,6 @@
 use super::vfs;
 use crate::drivers::storage;
+use crate::log_warn;
 use alloc::{format, string::String, vec::Vec};
 use errors::{Error, Result};
 
@@ -37,6 +38,67 @@ fn hex(field: &[u8]) -> Result<u64> {
     u64::from_str_radix(text, 16).map_err(|_| Error::InvalidArgument)
 }
 
+/// Maps an archive path (Unix-style, e.g. "bin/sh") into the ZodiacFS layout
+/// (Cluster/Package/[Folder/]Item). Returns None when the entry needs no
+/// action (the Cluster/Package/Folder already exists from the root layout).
+///
+/// The hierarchy has a fixed depth, so anything nested deeper than
+/// Package/Folder/Item is flattened into the Item name with '-'.
+fn remap(name: &str, is_dir: bool) -> Option<String> {
+    let comps: Vec<&str> = name.split('/').filter(|c| !c.is_empty()).collect();
+    let (top, tail) = comps.split_first()?;
+    let mut rest: Vec<&str> = tail.to_vec();
+
+    let (cluster, package, folder): (&str, &str, Option<&str>) = match *top {
+        "bin" | "sbin" => ("Applications", "Core", None),
+        "lib" => ("System", "Libraries", None),
+        "etc" => ("System", "Configuration", None),
+        "boot" => ("System", "Kernel", Some("Boot")),
+        "usr" => ("System", "Shared", None),
+        "root" => ("Users", "root", None),
+        "home" => {
+            let (user, r) = rest.split_first()?;
+            let user = *user;
+            rest = r.to_vec();
+            ("Users", user, None)
+        }
+        other => {
+            rest.insert(0, other); // unknown top-level name: keep it as part of the path
+            ("System", "Files", None)
+        }
+    };
+
+    let mut path = format!("/{}/{}", cluster, package);
+    if let Some(f) = folder {
+        if is_dir || rest.is_empty() {
+            return None;
+        }
+        path.push('/');
+        path.push_str(f);
+        path.push('/');
+        path.push_str(&rest.join("-"));
+        return Some(path);
+    }
+    match rest.len() {
+        0 => None,
+        1 => {
+            path.push('/');
+            path.push_str(rest[0]); // a Folder (dir entry) or an Item directly in the Package
+            Some(path)
+        }
+        _ => {
+            if is_dir {
+                return None; // deeper directories are flattened into item names
+            }
+            path.push('/');
+            path.push_str(rest[0]); // Folder
+            path.push('/');
+            path.push_str(&rest[1..].join("-")); // Item
+            Some(path)
+        }
+    }
+}
+
 /// cpio "newc": a 110-byte ASCII header ("070701" + thirteen 8-digit hex fields),
 /// the NUL-terminated name, then the data. Names and data are padded to 4 bytes.
 fn unpack(archive: &[u8]) -> Result<usize> {
@@ -69,17 +131,23 @@ fn unpack(archive: &[u8]) -> Result<usize> {
 
         let name = raw.trim_start_matches("./").trim_start_matches('/');
         if !name.is_empty() {
-            let path: String = format!("/{}", name);
-            match mode & 0o170000 {
-                0o040000 => vfs::mkdir_all(&path, (mode & 0o7777) as u16)?,
-                0o100000 => vfs::write_file(
-                    &path,
-                    (mode & 0o7777) as u16,
-                    &archive[data_start..data_end],
-                )?,
-                _ => {} // symlinks and device nodes are not supported yet
+            let perm = (mode & 0o7777) as u16;
+            let result = match mode & 0o170000 {
+                0o040000 => match remap(name, true) {
+                    Some(path) => vfs::mkdir_all(&path, perm),
+                    None => Ok(()),
+                },
+                0o100000 => match remap(name, false) {
+                    Some(path) => vfs::write_file(&path, perm, &archive[data_start..data_end]),
+                    None => Ok(()),
+                },
+                _ => Ok(()), // symlinks and device nodes are not supported yet
+            };
+            // One bad entry must not stop the boot: report it and keep going.
+            match result {
+                Ok(()) => count += 1,
+                Err(e) => log_warn!("initramfs: skipped {}: {}", name, e),
             }
-            count += 1;
         }
         pos = (data_end + 3) & !3;
     }
