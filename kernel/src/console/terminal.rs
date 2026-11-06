@@ -203,6 +203,7 @@ fn execute(line: &str) {
             arch::sleep_ms(800);
             arch::shutdown();
         }
+        "service" => crate::console::svccmd::run(args),
 
         // ---- Package manager ----
         "zpm" => {
@@ -381,6 +382,13 @@ fn help() {
         "crash",
         "<panic|assert|ud|pf|div|null|write|bp|stack>",
         "trigger a test crash",
+    );
+
+    help_heading("Services:");
+    help_line(
+        "service",
+        "<list|new|start|kill|restart|remove>",
+        "background services (root for changes)",
     );
 
     help_heading("Files (Container > Cluster > Package > Folder > Item):");

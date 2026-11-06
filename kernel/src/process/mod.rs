@@ -3,6 +3,7 @@ pub mod context;
 pub mod programs;
 pub mod syscall;
 pub mod task;
+pub mod services;
 
 use crate::base::sync::Mutex;
 use crate::memory::security::{MapError, Perm};
