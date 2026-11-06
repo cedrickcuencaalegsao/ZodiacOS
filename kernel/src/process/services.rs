@@ -68,12 +68,15 @@ pub fn finish() -> ! {
 pub struct Builtin {
     pub name: &'static str,
     pub status: fn() -> String,
+    pub pid: fn() -> Option<u32>,
 }
 
 pub const BUILTINS: &[Builtin] = &[
-    Builtin { name: "SessionManager", status: sessions_status },
-    Builtin { name: "AuthManager", status: auth_status },
+    Builtin { name: "SessionManager", status: sessions_status, pid: sessions_pid },
+    Builtin { name: "AuthManager", status: auth_status, pid: auth_pid },
+    Builtin { name: "EthernetManager", status: ethernet_status, pid: ethernet_pid },
 ];
+
 
 fn sessions_status() -> String {
     use crate::security::service as sec;
@@ -252,4 +255,76 @@ pub fn remove(name: &str) -> Result<(), SvcError> {
     }
     r.remove(i);
     Ok(())
+}
+/// PID of a scheduler task by name (names are NUL-padded [u8; 16]).
+fn pid_of_task(name: &str) -> Option<u32> {
+    scheduler::snapshot()
+        .iter()
+        .flatten()
+        .find(|t| t.name.iter().take_while(|&&c| c != 0).eq(name.as_bytes().iter()))
+        .map(|t| t.pid)
+}
+
+fn ethernet_pid() -> Option<u32> {
+    pid_of_task("net")
+}
+
+fn ethernet_status() -> String {
+    use crate::drivers::network as net;
+
+    let Some(dev) = net::interface() else {
+        return String::from("no network interface");
+    };
+    let m = dev.mac();
+    let cfg = net::config();
+    let prefix: u32 = cfg.netmask.iter().map(|b| b.count_ones()).sum();
+    let s = dev.stats();
+    let thread = if ethernet_pid().is_some() { "" } else { " | net thread NOT running" };
+
+    format!(
+        "{} | link {} | {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} | {}.{}.{}.{}/{} gw {}.{}.{}.{} | rx {} tx {} pkts{}",
+        dev.name(),
+        if dev.link_up() { "up" } else { "down" },
+        m[0], m[1], m[2], m[3], m[4], m[5],
+        cfg.ip[0], cfg.ip[1], cfg.ip[2], cfg.ip[3],
+        prefix,
+        cfg.gateway[0], cfg.gateway[1], cfg.gateway[2], cfg.gateway[3],
+        s.rx_packets, s.tx_packets,
+        thread
+    )
+}
+
+// ---------- manager daemons (own a PID; the data lives in security::service) ----------
+
+fn sessiond() {
+    crate::process::detach(scheduler::current_pid()); // same as the net thread
+    loop {
+        // placeholder for future housekeeping (idle-session expiry etc.)
+        crate::interrupts::sleep_ms(1000);
+    }
+}
+
+fn authd() {
+    crate::process::detach(scheduler::current_pid());
+    loop {
+        // placeholder (failed-login lockout timers etc.)
+        crate::interrupts::sleep_ms(1000);
+    }
+}
+
+/// Call once at boot, after process::init() and interrupts::enable().
+pub fn start_managers() {
+    for (name, entry) in [("sessiond", sessiond as Entry), ("authd", authd as Entry)] {
+        if let Err(e) = spawn_task(name, entry) {
+            crate::log_warn!("cannot start {}: {:?}", name, e);
+        }
+    }
+}
+
+fn sessions_pid() -> Option<u32> {
+    pid_of_task("sessiond")
+}
+
+fn auth_pid() -> Option<u32> {
+    pid_of_task("authd")
 }

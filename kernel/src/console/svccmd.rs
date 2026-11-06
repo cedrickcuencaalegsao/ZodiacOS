@@ -14,11 +14,12 @@ pub fn run(args: &[&str]) {
             let kpid = crate::scheduler::with(|s| s.tasks[0].pid);
             kprintln!("{:<16} {:<8} {:<6} {}", "NAME", "STATE", "PID", "INFO");
             for b in services::BUILTINS {
+                let pid = (b.pid)().unwrap_or(kpid);
                 kprintln!(
                     "{:<16} {:<8} {:<6} {}",
                     b.name,
                     "builtin",
-                    kpid,
+                    pid,
                     (b.status)()
                 );
             }
