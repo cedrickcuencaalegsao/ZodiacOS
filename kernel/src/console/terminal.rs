@@ -1,5 +1,5 @@
 use crate::console::netcmd;
-use crate::console::{fscmd, hwcmd, memcmd, taskcmd, zpm_cmd};
+use crate::console::{auth, fscmd, hwcmd, memcmd, taskcmd, zpm_cmd};
 use crate::filesystem::{self, Level, file};
 use crate::{arch, interrupts, keyboard, user, vga};
 use crate::{kprint, kprintln};
@@ -226,13 +226,13 @@ fn execute(line: &str) {
             let u = user::get();
             kprintln!("{}", user::as_str(&u));
         }
-        "login" => match args.first() {
-            Some(name) => match user::set(name) {
-                Ok(()) => kprintln!("now acting as {}", name),
-                Err(e) => kprintln!("login: {}", e),
-            },
-            None => kprintln!("usage: login <name>"),
+        "logout" | "login" => auth::logout_cmd(),
+        "exit" => match crate::security::service::exit_elevated() {
+            Ok(()) => kprintln!("back to {}", user::as_str(&user::get())),
+            Err(_) => auth::logout_cmd(), // not in an su: log out
         },
+        "adduser" => auth::adduser_cmd(args.first().copied()),
+        "user" => auth::user_cmd(args),
         "uptime" => {
             let ms = interrupts::uptime_ms();
             kprintln!(
@@ -364,11 +364,10 @@ fn help_line(cmd: &str, args: &str, desc: &str) {
 fn help() {
     help_heading("System:");
     help_line("whoami", "", "show current user");
-    help_line(
-        "login",
-        "<name>",
-        "switch user (sets the author of new files)",
-    );
+    help_line("login", "", "switch account (alias: logout)");
+    help_line("logout", "", "log out and pick an account");
+    help_line("exit", "", "leave an su session, or log out");
+    help_line("user", "<list|passwd>", "manage accounts (root only)");
     help_line("help", "", "show this list");
     help_line("clear", "", "clear the screen");
     help_line("echo", "<text>", "print text");

@@ -25,7 +25,10 @@ pub fn first_run_setup(password: &str) -> Result<String, AuthError> {
 
 pub fn login(name: &str, password: &str, now: u64) -> Result<SessionId, AuthError> {
     let who = AUTH.lock().authenticate(name, password)?;
-    let id = SESSIONS.lock().open(who, now);
+    let id = SESSIONS
+        .lock()
+        .open(who, now)
+        .map_err(|_| AuthError::SessionLimit)?;
     sync_prompt_name();
     Ok(id)
 }
@@ -93,4 +96,35 @@ fn sync_prompt_name() {
     if let Some(s) = SESSIONS.lock().active() {
         let _ = permissions::set(&s.name); // keeps the shell prompt in step
     }
+}
+
+use super::session::SessionError;
+
+/// `su <name>`: authenticate the target and push an elevated session.
+pub fn su(name: &str, password: &str, now: u64) -> Result<SessionId, AuthError> {
+    if SESSIONS.lock().is_empty() {
+        return Err(AuthError::PermissionDenied); // must be logged in first
+    }
+    let who = AUTH.lock().authenticate(name, password)?;
+    let id = SESSIONS.lock().open(who, now).map_err(|_| AuthError::SessionLimit)?;
+    sync_prompt_name();
+    Ok(id)
+}
+
+/// `exit` inside an su: pop one elevated session. Err(NotElevated) means
+/// the caller is at the login session, so `exit` should log out instead.
+pub fn exit_elevated() -> Result<(), SessionError> {
+    SESSIONS.lock().pop_elevated()?;
+    sync_prompt_name();
+    Ok(())
+}
+
+pub fn is_elevated() -> bool {
+    SESSIONS.lock().active().map_or(false, |s| s.is_elevated())
+}
+
+/// Full logout, including any nested su sessions.
+pub fn logout_all() {
+    SESSIONS.lock().close_all();
+    sync_prompt_name();
 }

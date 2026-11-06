@@ -22,6 +22,7 @@ pub enum AuthError {
     NoSuchUser,
     PermissionDenied,
     NoEntropy,
+    SessionLimit,
 }
 
 /// Who an account is. Returned on successful authentication.

@@ -13,3 +13,4 @@ pub mod tskmngr_glue;
 pub mod tskmngr;
 pub mod zedit_glue;
 pub mod prompt;
+pub mod auth;
